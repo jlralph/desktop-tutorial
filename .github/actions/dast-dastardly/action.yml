@@ -1,0 +1,84 @@
+name: 'DAST Dastardly Scan'
+description: 'Builds a Spring Boot app, starts it, and runs a Dastardly DAST scan'
+
+inputs:
+  target-url:
+    description: 'Base URL of the running application to scan'
+    required: false
+    default: 'http://localhost:8080'
+  health-check-path:
+    description: 'Path used to poll until the app is ready'
+    required: false
+    default: '/actuator/health'
+  pom-file:
+    description: 'Path to the Maven POM file'
+    required: false
+    default: 'pom.xml'
+  report-path:
+    description: 'Output path for the Dastardly JUnit XML report'
+    required: false
+    default: 'dastardly-report.xml'
+  startup-retries:
+    description: 'Number of 5-second retries while waiting for the app to start'
+    required: false
+    default: '30'
+
+runs:
+  using: composite
+  steps:
+    - name: Cache Maven packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.m2
+        key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+        restore-keys: ${{ runner.os }}-maven-
+
+    - name: Resolve JAVA_HOME from PATH
+      shell: bash
+      run: echo "APP_JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))" >> $GITHUB_ENV
+
+    - name: Build Spring Boot app
+      shell: bash
+      env:
+        JAVA_HOME: ${{ env.APP_JAVA_HOME }}
+      run: mvn -B package -DskipTests --file ${{ inputs.pom-file }}
+
+    - name: Start Spring Boot app
+      shell: bash
+      env:
+        JAVA_HOME: ${{ env.APP_JAVA_HOME }}
+      run: java -jar target/*.jar &
+
+    - name: Wait for app to be ready
+      shell: bash
+      run: |
+        echo "Waiting for app at ${{ inputs.target-url }}${{ inputs.health-check-path }}..."
+        for i in $(seq 1 ${{ inputs.startup-retries }}); do
+          if curl -sf ${{ inputs.target-url }}${{ inputs.health-check-path }}; then
+            echo "App is ready."
+            exit 0
+          fi
+          echo "Attempt $i/${{ inputs.startup-retries }} — retrying in 5s..."
+          sleep 5
+        done
+        echo "App did not start in time." && exit 1
+
+    - name: Run Dastardly Scan
+      shell: bash
+      continue-on-error: true
+      run: |
+        touch $GITHUB_WORKSPACE/${{ inputs.report-path }}
+        chmod 777 $GITHUB_WORKSPACE/${{ inputs.report-path }}
+        docker run --rm \
+          --network host \
+          -v $GITHUB_WORKSPACE:/github/workspace \
+          -e BURP_START_URL=${{ inputs.target-url }} \
+          -e BURP_REPORT_FILE_PATH=/github/workspace/${{ inputs.report-path }} \
+          public.ecr.aws/portswigger/dastardly:latest
+
+    - name: Publish Test Report
+      if: always()
+      uses: mikepenz/action-junit-report@v3
+      with:
+        report_paths: '**/${{ inputs.report-path }}'
+        require_tests: false

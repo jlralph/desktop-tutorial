@@ -16,54 +16,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache Maven packages
-        uses: actions/cache@v4
+      - name: Run Dastardly DAST scan
+        uses: ./.github/actions/dast-dastardly
         with:
-          path: ~/.m2
-          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
-          restore-keys: ${{ runner.os }}-maven-
-
-      - name: Resolve JAVA_HOME from PATH
-        run: echo "APP_JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))" >> $GITHUB_ENV
-
-      - name: Build Spring Boot app
-        env:
-          JAVA_HOME: ${{ env.APP_JAVA_HOME }}
-        run: mvn -B package -DskipTests --file pom.xml
-
-      - name: Start Spring Boot app
-        env:
-          JAVA_HOME: ${{ env.APP_JAVA_HOME }}
-        run: java -jar target/*.jar &
-
-      - name: Wait for app to be ready
-        run: |
-          echo "Waiting for Spring Boot to start..."
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:8080/actuator/health; then
-              echo "App is ready."
-              exit 0
-            fi
-            echo "Attempt $i/30 — retrying in 5s..."
-            sleep 5
-          done
-          echo "App did not start in time." && exit 1
-
-      - name: Run Dastardly Scan
-        continue-on-error: true
-        run: |
-          touch $GITHUB_WORKSPACE/dastardly-report.xml
-          chmod 777 $GITHUB_WORKSPACE/dastardly-report.xml
-          docker run --rm \
-            --network host \
-            -v $GITHUB_WORKSPACE:/github/workspace \
-            -e BURP_START_URL=http://localhost:8080 \
-            -e BURP_REPORT_FILE_PATH=/github/workspace/dastardly-report.xml \
-            public.ecr.aws/portswigger/dastardly:latest
-
-      - name: Publish Test Report
-        if: always()
-        uses: mikepenz/action-junit-report@v3
-        with:
-          report_paths: '**/dastardly-report.xml'
-          require_tests: false
+          target-url: 'http://localhost:8080'
+          health-check-path: '/actuator/health'
+          pom-file: 'pom.xml'
+          report-path: 'dastardly-report.xml'
+          startup-retries: '30'
