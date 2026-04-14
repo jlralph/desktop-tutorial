@@ -48,8 +48,9 @@ jobs:
         with:
           script: |
             const labels = [
-              { name: 'security',     color: 'ee0701', description: 'Security vulnerability' },
-              { name: 'osv-scanner',  color: 'e4e669', description: 'Detected by OSV Scanner' },
+              { name: 'security',    color: 'ee0701', description: 'Security vulnerability' },
+              { name: 'osv-scanner-container', color: 'e4e669', description: 'Detected by OSV Container Scanner' },
+              { name: 'sast',        color: '6495ED', description: 'Static Application Security Testing' },
             ];
             for (const label of labels) {
               try {
@@ -58,15 +59,27 @@ jobs:
                   repo:  context.repo.repo,
                   name:  label.name,
                 });
-              } catch {
-                await github.rest.issues.createLabel({
+                await github.rest.issues.updateLabel({
                   owner:       context.repo.owner,
                   repo:        context.repo.repo,
                   name:        label.name,
                   color:       label.color,
                   description: label.description,
                 });
-                console.log(`Created label: ${label.name}`);
+                console.log(`Updated label: ${label.name}`);
+              } catch (err) {
+                if (err.status === 404) {
+                  await github.rest.issues.createLabel({
+                    owner:       context.repo.owner,
+                    repo:        context.repo.repo,
+                    name:        label.name,
+                    color:       label.color,
+                    description: label.description,
+                  });
+                  console.log(`Created label: ${label.name}`);
+                } else {
+                  throw err;
+                }
               }
             }
 
