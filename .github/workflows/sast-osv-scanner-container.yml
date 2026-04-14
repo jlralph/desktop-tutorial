@@ -114,7 +114,7 @@ jobs:
             const { data: existingIssues } = await github.rest.issues.listForRepo({
               owner:    context.repo.owner,
               repo:     context.repo.repo,
-              labels:   'security,osv-scanner',
+              labels:   'security,osv-scanner-container,sast',
               state:    'open',
               per_page: 100,
             });
@@ -131,7 +131,7 @@ jobs:
                   owner:      context.repo.owner,
                   repo:       context.repo.repo,
                   issue_number: issue.number,
-                  body: '✅ This vulnerability is no longer detected by OSV Scanner. Closing automatically.',
+                  body: '✅ This vulnerability is no longer detected by OSV Container Scanner. Closing automatically.',
                 });
                 await github.rest.issues.update({
                   owner:        context.repo.owner,
@@ -197,7 +197,7 @@ jobs:
                     repo:   context.repo.repo,
                     title,
                     body,
-                    labels: ['security', 'osv-scanner'],
+                    labels: ['security', 'osv-scanner-container', 'sast'],
                   });
 
                   console.log(`Created issue: ${title}`);
