@@ -17,6 +17,10 @@ inputs:
     description: 'Path for the Maven build output log'
     required: false
     default: 'mvn-output.txt'
+  format:
+    description: 'Report format: HTML, XML, CSV, JSON, JUNIT, SARIF, or ALL'
+    required: false
+    default: 'JSON'
 
 runs:
   using: composite
@@ -57,6 +61,7 @@ runs:
           -DskipITs \
           -Dmax.cvss.score=${{ inputs.max-cvss-score }} \
           -DnodeAuditSkip=true \
+          -Dformat=${{ inputs.format }} \
           org.owasp:dependency-check-maven:check \
           -l ${{ github.workspace }}/${{ inputs.output-file }}
 

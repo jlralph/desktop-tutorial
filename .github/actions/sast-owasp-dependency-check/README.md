@@ -18,6 +18,7 @@ A composite GitHub Action that builds a Spring Boot application and runs an [OWA
 | `pom-file` | No | `pom.xml` | Path to the Maven POM file |
 | `max-cvss-score` | No | `8` | Fail the scan if any dependency has a CVSS score above this value |
 | `output-file` | No | `mvn-output.txt` | Path for the Maven build output log |
+| `format` | No | `JSON` | Report format: `HTML`, `XML`, `CSV`, `JSON`, `JUNIT`, `SARIF`, or `ALL` |
 
 ## Usage
 
