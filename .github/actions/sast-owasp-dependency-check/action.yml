@@ -62,6 +62,7 @@ runs:
           -Dmax.cvss.score=${{ inputs.max-cvss-score }} \
           -DnodeAuditSkip=true \
           -Dformat=${{ inputs.format }} \
+          -DprettyPrint \
           org.owasp:dependency-check-maven:check \
           -l ${{ github.workspace }}/${{ inputs.output-file }}
 
