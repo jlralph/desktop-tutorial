@@ -11,12 +11,8 @@
 #
 name: "SAST (CodeQL)"
 
-on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-  
+on: workflow_dispatch
+
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})

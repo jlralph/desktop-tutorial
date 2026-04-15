@@ -1,6 +1,6 @@
 name: DAST (Checkmarx ZAP)
 
-on: [push]
+on: workflow_dispatch
 
 jobs:
   zap_scan:

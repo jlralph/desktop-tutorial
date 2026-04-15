@@ -1,11 +1,7 @@
 name: SAST (OSV-Scanner-Container)
 
 # Change "main" to your default branch if you use a different name, i.e. "master"
-on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+on: workflow_dispatch
 
 permissions:
   # Required to upload SARIF file to CodeQL. See: https://github.com/github/codeql-action/issues/2117
@@ -18,14 +14,9 @@ permissions:
   issues: write
 
 jobs:
-  scan-pr:
-    if: github.event_name == 'pull_request'
-    uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@v2.3.3"
-
   scan-and-create-issues:
     name: Scan & Create Issues
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
 

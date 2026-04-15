@@ -1,6 +1,6 @@
 name: SAST (OWASP Dependency Check)
 
-on: [push]
+on: workflow_dispatch
 
 permissions:
   contents: read

@@ -13,26 +13,31 @@ A Spring Boot web application with a fully automated CI and security scanning pi
 ### Build
 | Workflow | Trigger | Description |
 |---|---|---|
-| Java CI with Maven | push / PR → `main` | Builds the project with Maven and uploads the dependency graph to GitHub |
+| Java CI with Maven | manual | Builds the project with Maven and uploads the dependency graph to GitHub |
 
 ### SAST (Static Analysis)
 | Workflow | Trigger | Description |
 |---|---|---|
-| CodeQL | push / PR → `main` | GitHub's semantic code analysis for vulnerability detection |
-| Codacy | push / PR → `main` | Code quality and security analysis |
-| OSV-Scanner | push / PR → `main` | Open-source vulnerability scanning against the OSV database |
-| OWASP Dependency Check | push / PR → `main` | Checks dependencies against known CVEs |
-| Poutine | push / PR → `main` | Supply-chain security analysis for GitHub Actions |
+| CodeQL | manual | GitHub's semantic code analysis for vulnerability detection |
+| Codacy | manual | Code quality and security analysis |
+| OSV-Scanner | manual | Open-source vulnerability scanning against the OSV database |
+| OSV-Scanner (Container) | manual | Scans a container image for vulnerabilities and syncs findings to GitHub Issues |
+| OWASP Dependency Check | manual | Checks dependencies against known CVEs |
+| Poutine | manual | Supply-chain security analysis for GitHub Actions |
 
 ### DAST (Dynamic Analysis)
 | Workflow | Trigger | Description |
 |---|---|---|
-| Checkmarx ZAP | push | Builds and starts the Spring Boot app, then runs a full ZAP scan against `http://localhost:8080` |
-| Dastardly | push / PR → `main` | Lightweight DAST scan using Burp Suite's Dastardly |
+| Checkmarx ZAP | manual | Builds and starts the Spring Boot app, then runs a full ZAP scan against `http://localhost:8080` |
+| Dastardly | manual | Lightweight DAST scan using Burp Suite's Dastardly |
 
-## Custom Action
+## Custom Actions
 
-A reusable local action is defined in [.github/actions/my-action/](.github/actions/my-action/) (Node 20 runtime).
+| Action | Description |
+|---|---|
+| [my-action](.github/actions/my-action/) | General-purpose action (Node 20 runtime) |
+| [sast-osv-scanner-container](.github/actions/sast-osv-scanner-container/) | Scans a container image with OSV Scanner and syncs GitHub Issues |
+| [dast-dastardly](.github/actions/dast-dastardly/) | Builds the Spring Boot app and runs a Dastardly DAST scan |
 
 ## Badges
 
@@ -45,6 +50,8 @@ A reusable local action is defined in [.github/actions/my-action/](.github/actio
 [![SAST (CodeQL)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-codeql.yml/badge.svg)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-codeql.yml)
 
 [![SAST (OSV-Scanner)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-osv-scanner.yml/badge.svg)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-osv-scanner.yml)
+
+[![SAST (OSV-Scanner-Container)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-osv-scanner-container.yml/badge.svg)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-osv-scanner-container.yml)
 
 [![SAST (OWASP Dependency Check)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-dependencyCheck.yml/badge.svg)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-dependencyCheck.yml)
 

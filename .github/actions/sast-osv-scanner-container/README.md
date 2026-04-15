@@ -27,8 +27,17 @@ A composite GitHub Action that scans a container image for known vulnerabilities
 ## Usage
 
 ```yaml
+on: workflow_dispatch
+
+permissions:
+  actions: read
+  security-events: write
+  contents: read
+  issues: write
+
 jobs:
   scan-and-create-issues:
+    name: Scan & Create Issues
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,13 +50,3 @@ jobs:
 ```
 
 See [`sast-osv-scanner-container.yml`](../../workflows/sast-osv-scanner-container.yml) for the full example workflow.
-
-## Permissions required
-
-The calling workflow must grant:
-
-```yaml
-permissions:
-  issues: write
-  contents: read
-```
