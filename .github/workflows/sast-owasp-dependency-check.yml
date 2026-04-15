@@ -1,0 +1,20 @@
+name: Vulnerability Scan
+
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  owasp-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run OWASP Dependency Check
+        uses: ./.github/actions/sast-owasp-dependency-check
+        with:
+          nvd-api-key: ${{ secrets.nvdApiKey }}
+          pom-file: 'pom.xml'
+          max-cvss-score: '8'
+          output-file: 'mvn-output.txt'

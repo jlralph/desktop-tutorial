@@ -1,0 +1,67 @@
+name: 'SAST OWASP Dependency Check'
+description: 'Builds a Spring Boot app and runs an OWASP Dependency Check scan against it'
+
+inputs:
+  nvd-api-key:
+    description: 'NVD API key for fetching the latest CVE database'
+    required: true
+  pom-file:
+    description: 'Path to the Maven POM file'
+    required: false
+    default: 'pom.xml'
+  max-cvss-score:
+    description: 'Fail the scan if any dependency has a CVSS score above this threshold'
+    required: false
+    default: '8'
+  output-file:
+    description: 'Path for the Maven build output log'
+    required: false
+    default: 'mvn-output.txt'
+
+runs:
+  using: composite
+  steps:
+    - name: Restore cached Maven dependencies
+      uses: actions/cache/restore@v3
+      with:
+        path: ~/.m2/repository
+        # Using datetime in cache key as OWASP database may change, without the pom changing
+        key: ${{ runner.os }}-maven-${{ steps.get-date.outputs.datetime }}-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ runner.os }}-maven-${{ steps.get-date.outputs.datetime }}
+          ${{ runner.os }}-maven-
+
+    - name: Resolve JAVA_HOME from PATH
+      shell: bash
+      run: echo "APP_JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))" >> $GITHUB_ENV
+
+    - name: Build Spring Boot app
+      shell: bash
+      env:
+        JAVA_HOME: ${{ env.APP_JAVA_HOME }}
+      run: mvn -B package -DskipTests --file ${{ inputs.pom-file }}
+
+    - name: Get Date
+      id: get-date
+      shell: bash
+      run: echo "datetime=$(/bin/date -u "+%Y%m%d%H")" >> $GITHUB_OUTPUT
+
+    - name: Build & scan
+      id: scan
+      shell: bash
+      env:
+        JAVA_HOME: ${{ env.APP_JAVA_HOME }}
+      run: |
+        mvn --no-transfer-progress clean package -DskipTests \
+          -DnvdApiKey=${{ inputs.nvd-api-key }} \
+          -DskipITs \
+          -Dmax.cvss.score=${{ inputs.max-cvss-score }} \
+          org.owasp:dependency-check-maven:check \
+          -l ${{ github.workspace }}/${{ inputs.output-file }}
+
+    - name: Cache Maven dependencies
+      uses: actions/cache/save@v3
+      if: always()
+      with:
+        path: ~/.m2/repository
+        key: ${{ runner.os }}-maven-${{ steps.get-date.outputs.datetime }}-${{ hashFiles('**/pom.xml') }}
