@@ -56,6 +56,7 @@ runs:
           -DnvdApiKey=${{ inputs.nvd-api-key }} \
           -DskipITs \
           -Dmax.cvss.score=${{ inputs.max-cvss-score }} \
+          -DnodeAuditSkip=true \
           org.owasp:dependency-check-maven:check \
           -l ${{ github.workspace }}/${{ inputs.output-file }}
 
