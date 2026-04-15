@@ -1,4 +1,4 @@
-name: Vulnerability Scan
+name: SAST (OWASP Dependency Check)
 
 on: workflow_dispatch
 
