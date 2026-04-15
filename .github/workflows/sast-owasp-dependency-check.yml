@@ -16,6 +16,6 @@ jobs:
         with:
           nvd-api-key: ${{ secrets.nvdApiKey }}
           pom-file: 'pom.xml'
-          max-cvss-score: '8'
-          output-file: 'mvn-output.txt'
+          max-cvss-score: '8.5'
+          output-file: 'scan-output.json'
           format: 'JSON'

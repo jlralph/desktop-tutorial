@@ -65,6 +65,16 @@ runs:
           org.owasp:dependency-check-maven:check \
           -l ${{ github.workspace }}/${{ inputs.output-file }}
 
+    - name: Upload scan artifacts
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: dependency-check-results
+        path: |
+          ${{ github.workspace }}/reports/
+          ${{ github.workspace }}/${{ inputs.output-file }}
+        retention-days: 30
+
     - name: Cache Maven dependencies
       uses: actions/cache/save@v3
       if: always()

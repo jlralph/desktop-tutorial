@@ -8,7 +8,8 @@ A composite GitHub Action that builds a Spring Boot application and runs an [OWA
 2. **Builds the Spring Boot app** — runs `mvn -B package -DskipTests`.
 3. **Gets the current date** — stamps a datetime used as the Maven cache key.
 4. **Runs Dependency Check** — executes `org.owasp:dependency-check-maven:check` and fails if any dependency exceeds the configured CVSS threshold.
-5. **Saves Maven cache** — persists `~/.m2/repository` under the datetime key for future runs (always runs, even on scan failure).
+5. **Uploads artifacts** — uploads the scan report (`reports/`) and Maven build log to a `dependency-check-results` artifact, retained for 30 days (always runs, even on scan failure).
+6. **Saves Maven cache** — persists `~/.m2/repository` under the datetime key for future runs (always runs, even on scan failure).
 
 ## Inputs
 
