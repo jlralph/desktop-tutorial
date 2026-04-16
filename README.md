@@ -37,6 +37,7 @@ A Spring Boot web application with a fully automated CI and security scanning pi
 |---|---|
 | [my-action](.github/actions/my-action/) | General-purpose action (Node 20 runtime) |
 | [sast-osv-scanner-container](.github/actions/sast-osv-scanner-container/) | Scans a container image with OSV Scanner and syncs GitHub Issues |
+| [sast-owasp-dependency-check](.github/actions/sast-owasp-dependency-check/) | Builds the Spring Boot app and runs an OWASP Dependency Check scan |
 | [dast-dastardly](.github/actions/dast-dastardly/) | Builds the Spring Boot app and runs a Dastardly DAST scan |
 
 ## Badges

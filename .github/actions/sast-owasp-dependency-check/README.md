@@ -8,7 +8,7 @@ A composite GitHub Action that builds a Spring Boot application and runs an [OWA
 2. **Builds the Spring Boot app** — runs `mvn -B package -DskipTests`.
 3. **Gets the current date** — stamps a datetime used as the Maven cache key.
 4. **Runs Dependency Check** — executes `org.owasp:dependency-check-maven:check` and fails if any dependency exceeds the configured CVSS threshold.
-5. **Uploads artifacts** — uploads the scan report (`reports/`) and Maven build log to a `dependency-check-results` artifact, retained for 30 days (always runs, even on scan failure).
+5. **Uploads artifacts** — uploads the scan report from the configured output directory to a `dependency-check-results` artifact, retained for 30 days (always runs, even on scan failure).
 6. **Saves Maven cache** — persists `~/.m2/repository` under the datetime key for future runs (always runs, even on scan failure).
 
 ## Inputs
@@ -18,7 +18,7 @@ A composite GitHub Action that builds a Spring Boot application and runs an [OWA
 | `nvd-api-key` | Yes | — | NVD API key for fetching the latest CVE database |
 | `pom-file` | No | `pom.xml` | Path to the Maven POM file |
 | `max-cvss-score` | No | `8` | Fail the scan if any dependency has a CVSS score above this value |
-| `output-file` | No | `mvn-output.txt` | Path for the Maven build output log |
+| `report-dir` | No | `dependency-check-report` | Directory where the dependency check report is written |
 | `format` | No | `JSON` | Report format: `HTML`, `XML`, `CSV`, `JSON`, `JUNIT`, `SARIF`, or `ALL` |
 
 ## Usage
@@ -41,7 +41,8 @@ jobs:
           nvd-api-key: ${{ secrets.nvdApiKey }}
           pom-file: 'pom.xml'
           max-cvss-score: '8'
-          output-file: 'mvn-output.txt'
+          report-dir: 'dependency-check-report'
+          format: 'JSON'
 ```
 
 See [`sast-owasp-dependency-check.yml`](../../workflows/sast-owasp-dependency-check.yml) for the full example workflow.

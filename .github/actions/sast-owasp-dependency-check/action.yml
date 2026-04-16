@@ -13,10 +13,10 @@ inputs:
     description: 'Fail the scan if any dependency has a CVSS score above this threshold'
     required: false
     default: '8'
-  output-file:
-    description: 'Path for the Maven build output log'
+  report-dir:
+    description: 'Directory where the dependency check report is written'
     required: false
-    default: 'mvn-output.txt'
+    default: 'dependency-check-report'
   format:
     description: 'Report format: HTML, XML, CSV, JSON, JUNIT, SARIF, or ALL'
     required: false
@@ -63,17 +63,15 @@ runs:
           -DnodeAuditSkip=true \
           -Dformat=${{ inputs.format }} \
           -DprettyPrint \
-          org.owasp:dependency-check-maven:check \
-          -l ${{ github.workspace }}/${{ inputs.output-file }}
+          -Dodc.outputDirectory=${{ github.workspace }}/${{ inputs.report-dir }} \
+          org.owasp:dependency-check-maven:check
 
     - name: Upload scan artifacts
       uses: actions/upload-artifact@v4
       if: always()
       with:
         name: dependency-check-results
-        path: |
-          ${{ github.workspace }}/reports/
-          ${{ github.workspace }}/${{ inputs.output-file }}
+        path: ${{ github.workspace }}/${{ inputs.report-dir }}/
         retention-days: 30
 
     - name: Cache Maven dependencies
