@@ -47,7 +47,7 @@ runs:
       shell: bash
       env:
         JAVA_HOME: ${{ env.APP_JAVA_HOME }}
-      run: mvn -B package -DskipTests --file ${{ inputs.pom-file }}
+      run: mvn -B clean package -DskipTests --file ${{ inputs.pom-file }}
 
     - name: Get Date
       id: get-date
@@ -60,7 +60,7 @@ runs:
       env:
         JAVA_HOME: ${{ env.APP_JAVA_HOME }}
       run: |
-        mvn --no-transfer-progress clean package -DskipTests \
+        mvn -DskipTests \
           -DnvdApiKey=${{ inputs.nvd-api-key }} \
           -DskipITs \
           -Dmax.cvss.score=${{ inputs.max-cvss-score }} \
