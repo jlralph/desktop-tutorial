@@ -4,9 +4,9 @@ A composite GitHub Action that builds a Spring Boot application, runs an [OWASP 
 
 ## What it does
 
-1. **Restores Maven cache** — restores `~/.m2/repository` from a datetime-keyed cache to avoid re-downloading the OWASP CVE database on every run.
-2. **Builds the Spring Boot app** — runs `mvn -B package -DskipTests`.
-3. **Gets the current date** — stamps a datetime used as the Maven cache key.
+1. **Gets the current date** — stamps a datetime used as the Maven cache key.
+2. **Restores Maven cache** — restores `~/.m2/repository` from a datetime-keyed cache to avoid re-downloading the OWASP CVE database on every run.
+3. **Builds the Spring Boot app** — runs `mvn -B clean package -DskipTests`.
 4. **Runs Dependency Check** — executes `org.owasp:dependency-check-maven:check` and fails if any dependency exceeds the configured CVSS threshold.
 5. **Syncs GitHub Issues** — when `github-token` is provided, runs [`scripts/create-cve-issues.sh`](../../../../scripts/create-cve-issues.sh) against the JSON report (always runs, even on scan failure):
    - **Creates** one issue per newly detected CVE

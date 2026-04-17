@@ -29,6 +29,11 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Get Date
+      id: get-date
+      shell: bash
+      run: echo "datetime=$(/bin/date -u "+%Y%m%d%H")" >> $GITHUB_OUTPUT
+
     - name: Restore cached Maven dependencies
       uses: actions/cache/restore@v3
       with:
@@ -48,11 +53,6 @@ runs:
       env:
         JAVA_HOME: ${{ env.APP_JAVA_HOME }}
       run: mvn -B clean package -DskipTests --file ${{ inputs.pom-file }}
-
-    - name: Get Date
-      id: get-date
-      shell: bash
-      run: echo "datetime=$(/bin/date -u "+%Y%m%d%H")" >> $GITHUB_OUTPUT
 
     - name: Build & scan
       id: scan
