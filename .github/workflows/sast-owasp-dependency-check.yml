@@ -4,6 +4,7 @@ on: workflow_dispatch
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   owasp-scan:
@@ -17,5 +18,5 @@ jobs:
           nvd-api-key: ${{ secrets.nvdApiKey }}
           pom-file: 'pom.xml'
           max-cvss-score: '8.5'
-          output-file: 'scan-output.json'
           format: 'JSON'
+          github-token: ${{ secrets.GITHUB_TOKEN }}

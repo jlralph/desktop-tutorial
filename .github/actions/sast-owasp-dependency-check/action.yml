@@ -21,6 +21,10 @@ inputs:
     description: 'Report format: HTML, XML, CSV, JSON, JUNIT, SARIF, or ALL'
     required: false
     default: 'JSON'
+  github-token:
+    description: 'GitHub token used to create one issue per CVE found. Requires issues:write. If omitted, issue creation is skipped.'
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -65,6 +69,19 @@ runs:
           -DprettyPrint \
           -Dodc.outputDirectory=${{ github.workspace }}/${{ inputs.report-dir }} \
           org.owasp:dependency-check-maven:check
+
+    - name: Create GitHub issues for CVEs
+      if: always() && inputs.github-token != ''
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        REPORT="${{ github.workspace }}/${{ inputs.report-dir }}/dependency-check-report.json"
+        if [[ -f "$REPORT" ]]; then
+          bash "${{ github.workspace }}/scripts/create-cve-issues.sh" "$REPORT" "${{ github.repository }}"
+        else
+          echo "Report not found at $REPORT — skipping issue creation."
+        fi
 
     - name: Upload scan artifacts
       uses: actions/upload-artifact@v4
