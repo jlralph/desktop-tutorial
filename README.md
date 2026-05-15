@@ -4,7 +4,7 @@ A Spring Boot web application with a fully automated CI and security scanning pi
 
 ## Stack
 
-- **Java 17** / **Spring Boot 3.2.5**
+- **Java 25** / **Spring Boot 4.0.6**
 - **Maven** (build & dependency management)
 - Spring Web, Spring Boot Actuator, Spring Boot Test
 
