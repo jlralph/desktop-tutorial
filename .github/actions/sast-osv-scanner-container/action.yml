@@ -6,9 +6,13 @@ inputs:
     description: 'Container image to scan (e.g. alpine:latest, nginx:1.25)'
     required: true
   github-token:
-    description: 'GitHub token for creating/updating labels and issues'
+    description: 'GitHub token for creating/updating labels and issues. To use enrich-with-dependabot, supply a token with Dependabot alerts read access (the default GITHUB_TOKEN does not have this scope).'
     required: false
     default: ${{ github.token }}
+  enrich-with-dependabot:
+    description: 'When "true", look up matching Dependabot alerts by GHSA/CVE and enrich each issue with the alert link, first patched version, vulnerable range, and any Dependabot auto-fix PR. Issues whose matching Dependabot alert was dismissed are skipped (and any existing issue is closed).'
+    required: false
+    default: 'false'
 
 runs:
   using: composite
@@ -71,10 +75,13 @@ runs:
 
     - name: Sync GitHub Issues with scan results
       uses: actions/github-script@v7
+      env:
+        ENRICH_WITH_DEPENDABOT: ${{ inputs.enrich-with-dependabot }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
           const fs = require('fs');
+          const enrichWithDependabot = process.env.ENRICH_WITH_DEPENDABOT === 'true';
 
           // Parse scan results (empty results = clean scan)
           let results = { results: [] };
@@ -87,12 +94,83 @@ runs:
             }
           }
 
-          // Build the set of titles the current scan found
-          const currentTitles = new Set();
+          // ── Optional Dependabot enrichment ────────────────────────────────
+          // Keyed by GHSA-id and CVE-id so OSV's vuln.id or any alias can match.
+          const alertByAdvisory = new Map();
+          const fixPrByAdvisory = new Map();
+
+          if (enrichWithDependabot) {
+            try {
+              const alerts = await github.paginate(github.rest.dependabot.listAlertsForRepo, {
+                owner:    context.repo.owner,
+                repo:     context.repo.repo,
+                per_page: 100,
+              });
+              for (const alert of alerts) {
+                const sa = alert.security_advisory ?? {};
+                if (sa.ghsa_id) alertByAdvisory.set(sa.ghsa_id, alert);
+                if (sa.cve_id)  alertByAdvisory.set(sa.cve_id,  alert);
+              }
+              console.log(`Indexed ${alerts.length} Dependabot alert(s).`);
+            } catch (e) {
+              core.warning(`Could not fetch Dependabot alerts — enrichment will be skipped. Ensure the supplied token has Dependabot alerts read access. (${e.message})`);
+            }
+
+            try {
+              const prs = await github.paginate(github.rest.search.issuesAndPullRequests, {
+                q: `repo:${context.repo.owner}/${context.repo.repo} is:pr author:app/dependabot`,
+                per_page: 100,
+              });
+              const advisoryRe = /(GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}|CVE-\d{4}-\d{4,7})/gi;
+              for (const pr of prs) {
+                const ids = new Set(((`${pr.title}\n${pr.body ?? ''}`).match(advisoryRe) ?? []).map(s => s.toUpperCase()));
+                for (const id of ids) {
+                  if (!fixPrByAdvisory.has(id)) fixPrByAdvisory.set(id, pr);
+                }
+              }
+              console.log(`Indexed ${prs.length} Dependabot PR(s) for fix-link lookup.`);
+            } catch (e) {
+              core.warning(`Could not list Dependabot PRs — fix links will be omitted. (${e.message})`);
+            }
+          }
+
+          const matchAlert = (vuln) => {
+            for (const id of [vuln.id, ...(vuln.aliases ?? [])]) {
+              const alert = alertByAdvisory.get(id);
+              if (alert) return alert;
+            }
+            return null;
+          };
+
+          const matchFixPr = (vuln) => {
+            for (const id of [vuln.id, ...(vuln.aliases ?? [])]) {
+              const pr = fixPrByAdvisory.get(id?.toUpperCase?.() ?? id);
+              if (pr) return pr;
+            }
+            return null;
+          };
+
+          // Build set of titles found by the current scan, splitting out
+          // those whose matching Dependabot alert is dismissed.
+          const currentTitles    = new Set();
+          const dismissedByTitle = new Map();
+
           for (const result of results.results ?? []) {
             for (const pkg of result.packages ?? []) {
               for (const vuln of pkg.vulnerabilities ?? []) {
-                currentTitles.add(`[OSV] ${vuln.id}: ${pkg.package.name}@${pkg.package.version}`);
+                const title = `[OSV] ${vuln.id}: ${pkg.package.name}@${pkg.package.version}`;
+                const alert = enrichWithDependabot ? matchAlert(vuln) : null;
+                const isDismissed = alert && (alert.state === 'dismissed' || alert.state === 'auto_dismissed');
+                if (isDismissed) {
+                  dismissedByTitle.set(title, {
+                    state:   alert.state,
+                    reason:  alert.dismissed_reason ?? alert.state,
+                    comment: alert.dismissed_comment ?? '',
+                    htmlUrl: alert.html_url,
+                  });
+                } else {
+                  currentTitles.add(title);
+                }
               }
             }
           }
@@ -107,28 +185,32 @@ runs:
           });
           const existingByTitle = new Map(existingIssues.map(i => [i.title, i]));
 
-          let created = 0;
-          let closed  = 0;
-          let skipped = 0;
+          let created   = 0;
+          let closed    = 0;
+          let dismissed = 0;
+          let skipped   = 0;
 
-          // ── Close issues for vulnerabilities no longer detected ──────────
+          // ── Close issues for vulns no longer detected or dismissed in Dependabot ──
           for (const [title, issue] of existingByTitle) {
-            if (!currentTitles.has(title)) {
-              await github.rest.issues.createComment({
-                owner:        context.repo.owner,
-                repo:         context.repo.repo,
-                issue_number: issue.number,
-                body: '✅ This vulnerability is no longer detected by OSV Container Scanner. Closing automatically.',
-              });
-              await github.rest.issues.update({
-                owner:        context.repo.owner,
-                repo:         context.repo.repo,
-                issue_number: issue.number,
-                state:        'closed',
-              });
-              console.log(`Closed resolved issue #${issue.number}: ${title}`);
-              closed++;
-            }
+            if (currentTitles.has(title)) continue;
+            const d = dismissedByTitle.get(title);
+            const body = d
+              ? `🛑 The matching Dependabot alert was ${d.state} (reason: \`${d.reason}\`).${d.comment ? `\n\n> ${d.comment}` : ''}\n\nDependabot alert: ${d.htmlUrl}\n\nClosing this issue automatically to respect that triage.`
+              : '✅ This vulnerability is no longer detected by OSV Container Scanner. Closing automatically.';
+            await github.rest.issues.createComment({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: issue.number,
+              body,
+            });
+            await github.rest.issues.update({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: issue.number,
+              state:        'closed',
+            });
+            console.log(`Closed issue #${issue.number}: ${title}${d ? ' (Dependabot-dismissed)' : ''}`);
+            if (d) dismissed++; else closed++;
           }
 
           // ── Open issues for newly detected vulnerabilities ───────────────
@@ -136,6 +218,11 @@ runs:
             for (const pkg of result.packages ?? []) {
               for (const vuln of pkg.vulnerabilities ?? []) {
                 const title = `[OSV] ${vuln.id}: ${pkg.package.name}@${pkg.package.version}`;
+
+                if (dismissedByTitle.has(title)) {
+                  console.log(`Skipping (Dependabot-dismissed): ${title}`);
+                  continue;
+                }
 
                 if (existingByTitle.has(title)) {
                   console.log(`Skipping duplicate: ${title}`);
@@ -150,6 +237,28 @@ runs:
                 const refs     = (vuln.references ?? [])
                                    .map(r => `- [${r.type}](${r.url})`)
                                    .join('\n') || '_No references._';
+
+                let enrichment = '';
+                if (enrichWithDependabot) {
+                  const alert = matchAlert(vuln);
+                  if (alert) {
+                    const sv      = alert.security_vulnerability ?? {};
+                    const fixedIn = sv.first_patched_version?.identifier ?? 'N/A';
+                    const range   = sv.vulnerable_version_range ?? 'N/A';
+                    const pr      = matchFixPr(vuln);
+                    enrichment = [
+                      '',
+                      '### Dependabot',
+                      '',
+                      `| Field | Value |`,
+                      `|-------|-------|`,
+                      `| **Alert** | [#${alert.number}](${alert.html_url}) (state: \`${alert.state}\`) |`,
+                      `| **First patched** | \`${fixedIn}\` |`,
+                      `| **Vulnerable range** | \`${range}\` |`,
+                      `| **Auto-fix PR** | ${pr ? `[#${pr.number}](${pr.html_url}) — ${pr.state}` : '_None found._'} |`,
+                    ].join('\n');
+                  }
+                }
 
                 const body = [
                   `## ${vuln.id}`,
@@ -174,6 +283,7 @@ runs:
                   '### References',
                   '',
                   refs,
+                  enrichment,
                   '',
                   '---',
                   '_Detected by [OSV Scanner](https://github.com/google/osv-scanner) in CI._',
@@ -194,4 +304,4 @@ runs:
             }
           }
 
-          console.log(`Done — ${created} opened, ${closed} closed, ${skipped} unchanged.`);
+          console.log(`Done — ${created} opened, ${closed} closed, ${dismissed} closed-as-dismissed, ${skipped} unchanged.`);
