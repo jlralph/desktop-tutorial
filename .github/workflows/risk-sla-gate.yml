@@ -1,0 +1,64 @@
+name: "Risk SLA Gate"
+
+# Audits open Dependabot alerts against severity-based remediation SLAs and
+# ties the result to the audited commit. Runs on demand, on a daily schedule,
+# and on pushes/PRs to the default branch.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "'enforce' (fail on SLA violations) or 'inform' (report only)."
+        required: false
+        default: "inform"
+        type: choice
+        options:
+          - inform
+          - enforce
+  schedule:
+    # Daily at 06:17 UTC. Schedules always run against the default branch.
+    - cron: "17 6 * * *"
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  # The action only reads repository contents; Dependabot alerts are read via
+  # the dedicated token secret below, not the default GITHUB_TOKEN.
+  contents: read
+
+jobs:
+  risk-sla-gate:
+    name: Audit Dependabot SLAs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Risk SLA Gate
+        id: gate
+        uses: ./.github/actions/risk_sla_gate
+        with:
+          # The default GITHUB_TOKEN generally CANNOT read Dependabot alerts.
+          # Provide a fine-grained PAT (repository permission
+          # "Dependabot alerts: read" + "Metadata: read") or a GitHub App
+          # installation token via this secret.
+          github-token: ${{ secrets.DEPENDABOT_ALERTS_TOKEN }}
+          # Default to 'inform' so scheduled/PR runs never block; allow an
+          # operator to dispatch an enforcing run via workflow_dispatch.
+          mode: ${{ github.event.inputs.mode || 'inform' }}
+          enforce-severities: "critical,high"
+          sla-critical: "7"
+          sla-high: "30"
+          sla-medium: "60"
+          sla-low: "90"
+          upload-report: "true"
+          report-retention-days: "365"
+
+      - name: Echo gate result
+        if: always()
+        run: |
+          echo "Result:                    ${{ steps.gate.outputs.result }}"
+          echo "Audited commit:            ${{ steps.gate.outputs.audited-commit }}"
+          echo "Total SLA violations:      ${{ steps.gate.outputs.violation-count }}"
+          echo "Enforced violations:       ${{ steps.gate.outputs.enforced-violation-count }}"
+          echo "Compliance report path:    ${{ steps.gate.outputs.report-path }}"
