@@ -1,0 +1,97 @@
+name: "Risk SLA Gate"
+description: >-
+  Audits open Dependabot alerts against severity-based remediation SLAs
+  (measured from the CVE published date) and ties the result to a specific
+  commit for compliance audits. Runs in 'enforce' or 'inform' mode, with
+  enforcement configurable per severity.
+author: "security-engineering"
+
+inputs:
+  github-token:
+    description: >-
+      Token with permission to read Dependabot alerts. Note: the default
+      GITHUB_TOKEN typically CANNOT read Dependabot alerts. Use a fine-grained
+      PAT (repository permission "Dependabot alerts: read") or a GitHub App
+      installation token.
+    required: true
+  repository:
+    description: "Repository to audit in owner/repo format."
+    required: false
+    default: ${{ github.repository }}
+  mode:
+    description: "'enforce' (fail the job on SLA violations) or 'inform' (report only)."
+    required: false
+    default: "inform"
+  enforce-severities:
+    description: >-
+      Comma-separated severities that cause failure when mode is 'enforce'
+      (e.g. 'critical,high'). Violations of other severities are still
+      reported but never fail the gate.
+    required: false
+    default: "critical,high"
+  sla-critical:
+    description: "Remediation SLA in days for critical severity."
+    required: false
+    default: "7"
+  sla-high:
+    description: "Remediation SLA in days for high severity."
+    required: false
+    default: "30"
+  sla-medium:
+    description: "Remediation SLA in days for medium severity."
+    required: false
+    default: "60"
+  sla-low:
+    description: "Remediation SLA in days for low severity."
+    required: false
+    default: "90"
+  upload-report:
+    description: "Upload the JSON compliance report as a workflow artifact."
+    required: false
+    default: "true"
+  report-retention-days:
+    description: "Artifact retention period in days for the compliance report."
+    required: false
+    default: "90"
+
+outputs:
+  result:
+    description: "'pass', 'fail', or 'informational'."
+    value: ${{ steps.gate.outputs.result }}
+  violation-count:
+    description: "Total number of open alerts over their SLA."
+    value: ${{ steps.gate.outputs.violation-count }}
+  enforced-violation-count:
+    description: "Number of violations in severities subject to enforcement."
+    value: ${{ steps.gate.outputs.enforced-violation-count }}
+  audited-commit:
+    description: "The commit SHA this review is tied to."
+    value: ${{ steps.gate.outputs.audited-commit }}
+  report-path:
+    description: "Path to the JSON compliance report."
+    value: ${{ steps.gate.outputs.report-path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Evaluate Dependabot alerts against SLA policy
+      id: gate
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPOSITORY: ${{ inputs.repository }}
+        MODE: ${{ inputs.mode }}
+        ENFORCE_SEVERITIES: ${{ inputs.enforce-severities }}
+        SLA_CRITICAL: ${{ inputs.sla-critical }}
+        SLA_HIGH: ${{ inputs.sla-high }}
+        SLA_MEDIUM: ${{ inputs.sla-medium }}
+        SLA_LOW: ${{ inputs.sla-low }}
+      run: bash "${{ github.action_path }}/risk_sla_gate.sh"
+
+    - name: Upload compliance report artifact
+      if: ${{ always() && inputs.upload-report == 'true' && steps.gate.outputs.report-path != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: risk-sla-gate-report-${{ github.sha }}
+        path: ${{ steps.gate.outputs.report-path }}
+        retention-days: ${{ inputs.report-retention-days }}
