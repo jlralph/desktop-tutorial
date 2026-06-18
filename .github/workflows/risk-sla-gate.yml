@@ -25,6 +25,11 @@ permissions:
   # The action only reads repository contents; Dependabot alerts are read via
   # the dedicated token secret below, not the default GITHUB_TOKEN.
   contents: read
+  # Required to sign the compliance report with a build-provenance attestation:
+  # id-token mints the OIDC token for keyless Sigstore signing, and
+  # attestations lets the run persist the signed attestation to the repo.
+  id-token: write
+  attestations: write
 
 jobs:
   risk-sla-gate:
@@ -62,3 +67,5 @@ jobs:
           echo "Total SLA violations:      ${{ steps.gate.outputs.violation-count }}"
           echo "Enforced violations:       ${{ steps.gate.outputs.enforced-violation-count }}"
           echo "Compliance report path:    ${{ steps.gate.outputs.report-path }}"
+          echo "Signed report attestation: ${{ steps.gate.outputs.attestation-url }}"
+          echo "Signed bundle attestation: ${{ steps.gate.outputs.bundle-attestation-url }}"

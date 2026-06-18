@@ -53,6 +53,15 @@ inputs:
     description: "Artifact retention period in days for the compliance report."
     required: false
     default: "90"
+  attest-report:
+    description: >-
+      Generate a signed build-provenance attestation for the compliance
+      report (Sigstore keyless signing via OIDC). The attestation binds the
+      report's digest to this workflow run and commit so its authenticity can
+      be verified later with `gh attestation verify`. Requires the calling
+      workflow to grant 'id-token: write' and 'attestations: write'.
+    required: false
+    default: "true"
 
 outputs:
   result:
@@ -70,6 +79,17 @@ outputs:
   report-path:
     description: "Path to the JSON compliance report."
     value: ${{ steps.gate.outputs.report-path }}
+  attestation-url:
+    description: >-
+      URL of the signed provenance attestation for the compliance report file
+      (empty if attestation was skipped). Record this as audit evidence.
+    value: ${{ steps.attest.outputs.attestation-url }}
+  bundle-attestation-url:
+    description: >-
+      URL of the signed provenance attestation for the uploaded artifact
+      bundle (empty if upload or attestation was skipped). Record this as
+      audit evidence.
+    value: ${{ steps.attest-bundle.outputs.attestation-url }}
 
 runs:
   using: "composite"
@@ -88,10 +108,33 @@ runs:
         SLA_LOW: ${{ inputs.sla-low }}
       run: bash "${{ github.action_path }}/risk_sla_gate.sh"
 
+    - name: Sign compliance report (provenance attestation)
+      id: attest
+      # Keyless Sigstore signing via the workflow's OIDC identity. Binds the
+      # report's SHA-256 digest to this run + commit and records it in the
+      # public transparency log, so the report's authenticity and origin can
+      # be proven during a later audit (gh attestation verify <file>).
+      if: ${{ always() && inputs.attest-report == 'true' && steps.gate.outputs.report-path != '' }}
+      uses: actions/attest-build-provenance@v2
+      with:
+        subject-path: ${{ steps.gate.outputs.report-path }}
+
     - name: Upload compliance report artifact
+      id: upload
       if: ${{ always() && inputs.upload-report == 'true' && steps.gate.outputs.report-path != '' }}
       uses: actions/upload-artifact@v4
       with:
         name: risk-sla-gate-report-${{ github.sha }}
         path: ${{ steps.gate.outputs.report-path }}
         retention-days: ${{ inputs.report-retention-days }}
+
+    - name: Sign uploaded artifact bundle (provenance attestation)
+      id: attest-bundle
+      # Attests the digest of the uploaded artifact zip itself (not just the
+      # JSON inside it), so the exact bundle pulled from the run's artifacts
+      # during an audit can be proven authentic and untampered.
+      if: ${{ always() && inputs.attest-report == 'true' && steps.upload.outputs.artifact-digest != '' }}
+      uses: actions/attest-build-provenance@v2
+      with:
+        subject-name: risk-sla-gate-report-${{ github.sha }}.zip
+        subject-digest: sha256:${{ steps.upload.outputs.artifact-digest }}
