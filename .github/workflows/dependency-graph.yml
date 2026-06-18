@@ -11,9 +11,6 @@ name: Update Dependency Graph
 
 on:
   push:
-    paths:
-      - 'pom.xml'
-      - 'src/**'
 
 permissions:
   contents: write
