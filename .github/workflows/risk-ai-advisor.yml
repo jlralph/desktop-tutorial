@@ -1,0 +1,68 @@
+name: "Risk AI Advisor"
+
+# Uses an AI model (via GitHub Models) to weigh open CodeQL and Dependabot
+# alerts and produce an overall risk verdict for releasing the build to a
+# public-facing website. Advisory by default; an operator can dispatch a
+# blocking run via workflow_dispatch.
+on:
+  workflow_dispatch:
+    inputs:
+      fail-on:
+        description: "Risk levels that fail the job (e.g. 'critical,high'). Empty = advisory only."
+        required: false
+        default: ""
+        type: string
+      model:
+        description: "GitHub Models model id ({publisher}/{model})."
+        required: false
+        default: "openai/gpt-4.1"
+        type: string
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  # Read CodeQL code-scanning alerts via the default GITHUB_TOKEN.
+  security-events: read
+  # Call the GitHub Models inference API via the default GITHUB_TOKEN.
+  models: read
+
+jobs:
+  risk-ai-advisor:
+    name: AI release-risk verdict
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Assess release risk with AI
+        id: advisor
+        uses: ./.github/actions/risk_ai_advisor
+        with:
+          # The default GITHUB_TOKEN reads CodeQL alerts and calls GitHub Models.
+          # It generally CANNOT read Dependabot alerts — provide a fine-grained
+          # PAT (repository permission "Dependabot alerts: read" + "Metadata:
+          # read") or a GitHub App installation token via this secret. If the
+          # secret is absent the advisor proceeds on CodeQL alerts alone.
+          dependabot-token: ${{ secrets.DEPENDABOT_ALERTS_TOKEN || github.token }}
+          model: ${{ github.event.inputs.model || 'openai/gpt-4.1' }}
+          app-context: >-
+            A build being released to a public-facing, internet-exposed website.
+          # Advisory by default; dispatch with a value to gate the release.
+          fail-on: ${{ github.event.inputs.fail-on || '' }}
+          max-alerts: "75"
+          upload-report: "true"
+          report-retention-days: "90"
+
+      - name: Echo verdict
+        if: always()
+        run: |
+          echo "Result:         ${{ steps.advisor.outputs.result }}"
+          echo "Risk level:     ${{ steps.advisor.outputs.risk-level }}"
+          echo "Recommendation: ${{ steps.advisor.outputs.recommendation }}"
+          echo "Open CodeQL:     ${{ steps.advisor.outputs.codeql-open }}"
+          echo "Open Dependabot: ${{ steps.advisor.outputs.dependabot-open }}"
+          echo "Audited commit: ${{ steps.advisor.outputs.audited-commit }}"
+          echo "Report path:    ${{ steps.advisor.outputs.report-path }}"
+          echo "Summary:        ${{ steps.advisor.outputs.summary }}"

@@ -1,0 +1,120 @@
+name: "Risk AI Advisor"
+description: >-
+  Uses an AI model (via GitHub Models) to weigh open CodeQL code-scanning
+  alerts and open Dependabot alerts together and produce an overall risk
+  verdict for releasing a build to a public-facing website. Advisory by
+  default; can optionally fail the job when the AI risk level meets a
+  configurable threshold.
+author: "security-engineering"
+
+inputs:
+  github-token:
+    description: >-
+      Token used to (1) read CodeQL code-scanning alerts and (2) call the
+      GitHub Models inference API. The default GITHUB_TOKEN works when the
+      calling job grants 'security-events: read' and 'models: read'.
+    required: false
+    default: ${{ github.token }}
+  dependabot-token:
+    description: >-
+      Token with permission to read Dependabot alerts. The default
+      GITHUB_TOKEN typically CANNOT read Dependabot alerts — provide a
+      fine-grained PAT (repository permission "Dependabot alerts: read" +
+      "Metadata: read") or a GitHub App installation token. Defaults to
+      github-token; if that can't read alerts, Dependabot input is treated
+      as empty and the advisor proceeds on CodeQL alerts alone.
+    required: false
+    default: ${{ github.token }}
+  repository:
+    description: "Repository to assess in owner/repo format."
+    required: false
+    default: ${{ github.repository }}
+  model:
+    description: >-
+      GitHub Models model to use, in '{publisher}/{model}' form
+      (e.g. 'openai/gpt-4.1').
+    required: false
+    default: "openai/gpt-4.1"
+  app-context:
+    description: >-
+      Free-text description of what is being released and its exposure, given
+      to the model as context (e.g. "Public-facing Java web app handling user
+      auth and payments, deployed to the internet"). Sharper context yields a
+      sharper verdict.
+    required: false
+    default: "A build being released to a public-facing, internet-exposed website."
+  fail-on:
+    description: >-
+      Comma-separated AI risk levels that fail the job (e.g. 'critical,high').
+      Leave empty (default) for advisory-only behavior — the verdict is always
+      reported but never blocks. Valid levels: critical, high, medium, low,
+      minimal.
+    required: false
+    default: ""
+  max-alerts:
+    description: >-
+      Maximum number of alerts of EACH type (CodeQL, Dependabot) to send to the
+      model, highest-severity first, to bound the prompt size. Counts are always
+      reported in full even when the detail list is truncated.
+    required: false
+    default: "75"
+  upload-report:
+    description: "Upload the JSON advisory report as a workflow artifact."
+    required: false
+    default: "true"
+  report-retention-days:
+    description: "Artifact retention period in days for the advisory report."
+    required: false
+    default: "90"
+
+outputs:
+  result:
+    description: "'advisory' (no fail-on set), 'pass', or 'fail'."
+    value: ${{ steps.advise.outputs.result }}
+  risk-level:
+    description: "AI-assessed overall risk: critical | high | medium | low | minimal."
+    value: ${{ steps.advise.outputs.risk-level }}
+  recommendation:
+    description: "AI release recommendation: block | conditional-go | go."
+    value: ${{ steps.advise.outputs.recommendation }}
+  summary:
+    description: "One-line AI summary of the release risk."
+    value: ${{ steps.advise.outputs.summary }}
+  codeql-open:
+    description: "Number of open CodeQL code-scanning alerts considered."
+    value: ${{ steps.advise.outputs.codeql-open }}
+  dependabot-open:
+    description: "Number of open Dependabot alerts considered."
+    value: ${{ steps.advise.outputs.dependabot-open }}
+  audited-commit:
+    description: "The commit SHA this assessment is tied to."
+    value: ${{ steps.advise.outputs.audited-commit }}
+  report-path:
+    description: "Path to the JSON advisory report."
+    value: ${{ steps.advise.outputs.report-path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Assess release risk with AI
+      id: advise
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        DEPENDABOT_TOKEN: ${{ inputs.dependabot-token }}
+        MODELS_TOKEN: ${{ inputs.github-token }}
+        REPOSITORY: ${{ inputs.repository }}
+        MODEL: ${{ inputs.model }}
+        APP_CONTEXT: ${{ inputs.app-context }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        MAX_ALERTS: ${{ inputs.max-alerts }}
+      run: bash "${{ github.action_path }}/risk_ai_advisor.sh"
+
+    - name: Upload advisory report artifact
+      id: upload
+      if: ${{ always() && inputs.upload-report == 'true' && steps.advise.outputs.report-path != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: risk-ai-advisor-report-${{ github.sha }}
+        path: ${{ steps.advise.outputs.report-path }}
+        retention-days: ${{ inputs.report-retention-days }}
