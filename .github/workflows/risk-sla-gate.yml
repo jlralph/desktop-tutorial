@@ -7,12 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "'enforce' (fail on SLA violations) or 'inform' (report only)."
+        description: "'enforce' (fail on SLA violations) or 'audit' (report only)."
         required: false
-        default: "inform"
+        default: "audit"
         type: choice
         options:
-          - inform
+          - audit
           - enforce
   schedule:
     # Daily at 06:17 UTC. Schedules always run against the default branch.
@@ -43,9 +43,9 @@ jobs:
           # "Dependabot alerts: read" + "Metadata: read") or a GitHub App
           # installation token via this secret.
           github-token: ${{ secrets.DEPENDABOT_ALERTS_TOKEN }}
-          # Default to 'inform' so scheduled/PR runs never block; allow an
+          # Default to 'audit' so scheduled/PR runs never block; allow an
           # operator to dispatch an enforcing run via workflow_dispatch.
-          mode: ${{ github.event.inputs.mode || 'inform' }}
+          mode: ${{ github.event.inputs.mode || 'audit' }}
           enforce-severities: "critical,high"
           sla-critical: "7"
           sla-high: "30"

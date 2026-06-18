@@ -10,13 +10,13 @@ set -euo pipefail
 
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${REPOSITORY:?REPOSITORY is required}"
-MODE="${MODE:-inform}"
+MODE="${MODE:-audit}"
 ENFORCE_SEVERITIES="${ENFORCE_SEVERITIES:-critical,high}"
 REPORT_PATH="risk-sla-gate-report-${GITHUB_SHA}.json"
 
 # --- Validate inputs --------------------------------------------------------
-if [[ "$MODE" != "enforce" && "$MODE" != "inform" ]]; then
-  echo "::error::Input 'mode' must be 'enforce' or 'inform' (got '${MODE}')."
+if [[ "$MODE" != "enforce" && "$MODE" != "audit" ]]; then
+  echo "::error::Input 'mode' must be 'enforce' or 'audit' (got '${MODE}')."
   exit 1
 fi
 
@@ -85,7 +85,7 @@ VIOLATION_COUNT=$(jq 'length' <<< "$VIOLATIONS")
 ENFORCED_COUNT=$(jq --argjson e "$ENFORCE_JSON" \
   '[ .[] | select(.severity as $s | $e | index($s)) ] | length' <<< "$VIOLATIONS")
 
-if [[ "$MODE" == "inform" ]]; then
+if [[ "$MODE" == "audit" ]]; then
   RESULT="informational"
 elif [[ "$ENFORCED_COUNT" -gt 0 ]]; then
   RESULT="fail"
@@ -178,7 +178,7 @@ echo "Compliance report written to ${REPORT_PATH}"
   case "$RESULT" in
     pass)          echo "**Result: ✅ PASS** — no SLA violations in enforced severities." ;;
     fail)          echo "**Result: ❌ FAIL** — ${ENFORCED_COUNT} violation(s) in enforced severities. The gate is blocking this commit." ;;
-    informational) echo "**Result: ℹ️ INFORMATIONAL** — gate is in inform mode; ${VIOLATION_COUNT} violation(s) reported, none blocking." ;;
+    informational) echo "**Result: ℹ️ INFORMATIONAL** — gate is in audit mode; ${VIOLATION_COUNT} violation(s) reported, none blocking." ;;
   esac
 } >> "$GITHUB_STEP_SUMMARY"
 

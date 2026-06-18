@@ -8,7 +8,7 @@ review can be evidenced during compliance audits.
 
 ## Modes
 
-In `inform` mode the gate reports violations but never fails the job. In
+In `audit` mode the gate reports violations but never fails the job. In
 `enforce` mode the job fails when any alert in a severity listed in
 `enforce-severities` is over its SLA. Violations in non-enforced severities
 are always reported but never block.
@@ -44,7 +44,7 @@ jobs:
         uses: ./risk_sla_gate
         with:
           github-token: ${{ secrets.DEPENDABOT_ALERTS_TOKEN }}
-          mode: enforce                 # or 'inform'
+          mode: enforce                 # or 'audit'
           enforce-severities: critical,high
           sla-critical: "7"
           sla-high: "30"

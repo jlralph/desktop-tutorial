@@ -2,7 +2,7 @@ name: "Risk SLA Gate"
 description: >-
   Audits open Dependabot alerts against severity-based remediation SLAs
   (measured from the CVE published date) and ties the result to a specific
-  commit for compliance audits. Runs in 'enforce' or 'inform' mode, with
+  commit for compliance audits. Runs in 'enforce' or 'audit' mode, with
   enforcement configurable per severity.
 author: "security-engineering"
 
@@ -19,9 +19,9 @@ inputs:
     required: false
     default: ${{ github.repository }}
   mode:
-    description: "'enforce' (fail the job on SLA violations) or 'inform' (report only)."
+    description: "'enforce' (fail the job on SLA violations) or 'audit' (report only)."
     required: false
-    default: "inform"
+    default: "audit"
   enforce-severities:
     description: >-
       Comma-separated severities that cause failure when mode is 'enforce'
