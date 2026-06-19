@@ -53,11 +53,22 @@ inputs:
       threshold. Valid levels: critical, high, medium, low, minimal.
     required: false
     default: ""
+  code-scanning-tool:
+    description: >-
+      Name of the code-scanning tool whose alerts to assess (matches the GitHub
+      code-scanning API 'tool_name' filter). Defaults to 'CodeQL', so alerts
+      uploaded by other SARIF scanners are excluded. Set to a different tool name
+      to target that scanner, or to 'all' (or empty) to include every tool.
+    required: false
+    default: "CodeQL"
   max-alerts:
     description: >-
       Maximum number of alerts of EACH type (CodeQL, Dependabot) to send to the
-      model, highest-severity first, to bound the prompt size. Counts are always
-      reported in full even when the detail list is truncated.
+      model, highest-severity first, to bound the prompt size. The action also
+      auto-trims the payload (slimming per-alert fields and further reducing this
+      count) to stay within the model's input-token limit, so requests don't fail
+      with HTTP 413. Counts are always reported in full even when the detail list
+      is truncated.
     required: false
     default: "75"
   upload-report:
@@ -131,6 +142,7 @@ runs:
         APP_CONTEXT: ${{ inputs.app-context }}
         FAIL_ON: ${{ inputs.fail-on }}
         MAX_ALERTS: ${{ inputs.max-alerts }}
+        CODE_SCANNING_TOOL: ${{ inputs.code-scanning-tool }}
         KEV_CACHE_DIR: ${{ steps.kev-cache-meta.outputs.dir }}
       run: bash "${{ github.action_path }}/risk_ai_advisor.sh"
 

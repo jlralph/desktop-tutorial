@@ -14,7 +14,9 @@ artifact named after that SHA, so the assessment can be evidenced later.
 
 ## What it does
 
-1. Fetches open CodeQL alerts (`GET /repos/{owner}/{repo}/code-scanning/alerts`).
+1. Fetches open CodeQL alerts (`GET /repos/{owner}/{repo}/code-scanning/alerts`),
+   filtered to the `code-scanning-tool` (CodeQL by default) so other SARIF
+   scanners' alerts aren't mixed in.
 2. Fetches open Dependabot alerts (`GET /repos/{owner}/{repo}/dependabot/alerts`).
 3. Downloads the CISA KEV catalog and flags any Dependabot alert whose CVE is
    listed as actively exploited in the wild (`known_exploited`), attaching the
@@ -100,7 +102,8 @@ logs a warning and proceeds on whatever signal it can read rather than failing.
 | `model` | `openai/gpt-4.1` | GitHub Models model, `{publisher}/{model}`. |
 | `app-context` | _(generic public-site text)_ | Description of what's being released and its exposure — sharper context, sharper verdict. |
 | `fail-on` | `""` | Severity threshold that fails the job — fails at this level or above (e.g. `high` → high + critical). Empty = advisory only. |
-| `max-alerts` | `75` | Max alerts of each type sent to the model (counts are always reported in full). |
+| `code-scanning-tool` | `CodeQL` | Code-scanning tool whose alerts to assess (`tool_name` filter). Excludes other SARIF scanners by default; set to `all` (or empty) to include every tool. |
+| `max-alerts` | `75` | Upper bound on alerts of each type sent to the model. The action also auto-trims the payload (slimming fields and reducing this count) to stay within the model's input-token limit. Counts are always reported in full. |
 | `upload-report` | `true` | Upload the JSON report as an artifact. |
 | `report-retention-days` | `90` | Artifact retention period. |
 

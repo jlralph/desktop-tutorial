@@ -19,6 +19,10 @@ MODEL="${MODEL:-openai/gpt-4.1}"
 APP_CONTEXT="${APP_CONTEXT:-A build being released to a public-facing, internet-exposed website.}"
 FAIL_ON="${FAIL_ON:-}"
 MAX_ALERTS="${MAX_ALERTS:-75}"
+# Which code-scanning tool's alerts to assess. Defaults to CodeQL so alerts from
+# other SARIF-uploading scanners on the repo are excluded. Set to a different
+# tool name to target that scanner, or to empty/"all" to include every tool.
+CODE_SCANNING_TOOL="${CODE_SCANNING_TOOL:-CodeQL}"
 REPORT_PATH="risk-ai-advisor-report-${GITHUB_SHA:-local}.json"
 
 VALID_LEVELS="critical high medium low minimal"
@@ -65,7 +69,16 @@ fetch_alerts() {
 echo "Collecting open security alerts for ${REPOSITORY} (commit ${GITHUB_SHA:-n/a})..."
 CODEQL_STATUS_FILE=$(mktemp)
 DEPENDABOT_STATUS_FILE=$(mktemp)
-CODEQL_RAW=$(fetch_alerts "/repos/${REPOSITORY}/code-scanning/alerts?state=open&per_page=100" "$GH_TOKEN" "CodeQL code-scanning alerts" "$CODEQL_STATUS_FILE")
+# Restrict code-scanning alerts to one tool (CodeQL by default) so findings from
+# other SARIF-uploading scanners aren't mixed in. An empty value (or "all")
+# disables the filter and pulls every tool's alerts. The tool name is URL-encoded.
+CODE_SCANNING_TOOL_QUERY=""
+CODE_SCANNING_LABEL="code-scanning alerts (all tools)"
+if [[ -n "$CODE_SCANNING_TOOL" && "${CODE_SCANNING_TOOL,,}" != "all" ]]; then
+  CODE_SCANNING_TOOL_QUERY="&tool_name=$(jq -rn --arg t "$CODE_SCANNING_TOOL" '$t | @uri')"
+  CODE_SCANNING_LABEL="${CODE_SCANNING_TOOL} code-scanning alerts"
+fi
+CODEQL_RAW=$(fetch_alerts "/repos/${REPOSITORY}/code-scanning/alerts?state=open&per_page=100${CODE_SCANNING_TOOL_QUERY}" "$GH_TOKEN" "$CODE_SCANNING_LABEL" "$CODEQL_STATUS_FILE")
 DEPENDABOT_RAW=$(fetch_alerts "/repos/${REPOSITORY}/dependabot/alerts?state=open&per_page=100" "$DEPENDABOT_TOKEN" "Dependabot alerts" "$DEPENDABOT_STATUS_FILE")
 CODEQL_READABLE=$(cat "$CODEQL_STATUS_FILE")
 DEPENDABOT_READABLE=$(cat "$DEPENDABOT_STATUS_FILE")
@@ -176,11 +189,13 @@ KEV_MATCHED=$(jq '[ .[] | select(.known_exploited) | .cve ] | unique | length' <
 # Severity tallies (for the summary table; computed over all alerts, not the truncated set).
 count_sev() { jq --arg s "$1" '[ .[] | select(.severity == $s) ] | length' <<< "$2"; }
 
-# Truncate the per-type detail sent to the model to bound prompt size.
-CODEQL_SENT=$(jq -c --argjson n "$MAX_ALERTS" '.[0:$n]' <<< "$CODEQL")
-DEPENDABOT_SENT=$(jq -c --argjson n "$MAX_ALERTS" '.[0:$n]' <<< "$DEPENDABOT")
-CODEQL_TRUNC=$(( CODEQL_OPEN > MAX_ALERTS ? CODEQL_OPEN - MAX_ALERTS : 0 ))
-DEPENDABOT_TRUNC=$(( DEPENDABOT_OPEN > MAX_ALERTS ? DEPENDABOT_OPEN - MAX_ALERTS : 0 ))
+# Per-type detail/truncation sent to the model. The actual values are computed in
+# the request-sizing loop below (which shrinks the payload to fit the model's
+# input-token limit); these defaults cover the no-open-alerts path.
+CODEQL_SENT="[]"
+DEPENDABOT_SENT="[]"
+CODEQL_TRUNC=0
+DEPENDABOT_TRUNC=0
 
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -229,43 +244,92 @@ else
 
   SYSTEM_PROMPT="You are a principal application security engineer acting as a release gatekeeper. You assess whether a software build is safe to release to a public-facing, internet-exposed website by reasoning over open static-analysis (CodeQL) findings and open dependency (Dependabot) vulnerabilities. Weigh exploitability from the internet, exposure of the affected code/dependency, severity, and whether fixes are available. Dependabot findings may be annotated with \"known_exploited\": true and a \"kev\" object: these CVEs appear in the CISA Known Exploited Vulnerabilities (KEV) catalog, meaning active in-the-wild exploitation is confirmed. Treat any KEV-listed vulnerability as a strong escalating factor — it should push the risk level and recommendation decisively toward blocking on a public-facing site, especially when knownRansomwareCampaignUse is 'Known' or a fix is available. KEV status is an amplifier, not a filter: it raises the priority of matching findings but does NOT mean other findings are unimportant. You must still consider and surface non-KEV vulnerabilities that a security reviewer would care about — e.g. critical/high-severity issues, internet-reachable CodeQL findings, and vulnerabilities with available fixes — even when KEV matches exist. Be decisive and concise. Reserve 'critical' for issues that are likely remotely exploitable on a public site with serious impact (KEV-listed, internet-reachable vulnerabilities are prime candidates). Output only what the provided JSON schema allows."
 
-  USER_PROMPT=$(jq -nr \
-    --arg ctx "$APP_CONTEXT" \
-    --arg repo "$REPOSITORY" \
-    --arg sha "${GITHUB_SHA:-n/a}" \
-    --argjson codeql "$CODEQL_SENT" \
-    --argjson dependabot "$DEPENDABOT_SENT" \
-    --argjson codeql_total "$CODEQL_OPEN" \
-    --argjson dependabot_total "$DEPENDABOT_OPEN" \
-    --argjson codeql_trunc "$CODEQL_TRUNC" \
-    --argjson dependabot_trunc "$DEPENDABOT_TRUNC" \
-    --argjson kev_size "$KEV_CATALOG_SIZE" \
-    --argjson kev_matched "$KEV_MATCHED" \
-    '"Release context: \($ctx)\n" +
-     "Repository: \($repo)\nCommit: \($sha)\n\n" +
-     "Open CodeQL alerts: \($codeql_total) (showing \($codeql | length), \($codeql_trunc) omitted for brevity).\n" +
-     "Open Dependabot alerts: \($dependabot_total) (showing \($dependabot | length), \($dependabot_trunc) omitted for brevity).\n" +
-     "CISA KEV catalog: \($kev_size) entries loaded; \($kev_matched) distinct CVE(s) across the open Dependabot alerts match the KEV catalog (actively exploited in the wild). Dependabot findings are annotated with \"known_exploited\" and a \"kev\" object when matched.\n\n" +
-     "CodeQL findings (JSON):\n" + ($codeql | tojson) + "\n\n" +
-     "Dependabot findings (JSON):\n" + ($dependabot | tojson) + "\n\n" +
-     "Assess the OVERALL risk of releasing this build to the public-facing site described above. Give decisive weight to any KEV-listed (known_exploited) vulnerability. Return your verdict per the required schema. In key_risks, list ALL release-relevant issues a reviewer should weigh — not only KEV-matched ones. Always include other serious findings (critical/high severity, internet-reachable CodeQL findings, and notable Dependabot vulnerabilities) alongside any KEV matches; do not drop them just because a KEV match exists. Order key_risks by importance (KEV-listed and critical first), set source to \"codeql\" or \"dependabot\", and call out KEV/known-exploited status in why_it_matters when applicable. In recommended_mitigations, give concrete, prioritized actions, remediating known-exploited vulnerabilities first."')
+  # --- Size the request to the model's input-token limit ------------------
+  # GitHub Models caps the request body (e.g. gpt-4.1 allows ~8000 input
+  # tokens), and an HTTP 413 "tokens_limit_reached" kills the run. The alert
+  # detail is the variable part, so we (1) slim each alert to its essential
+  # fields with long free-text truncated, and (2) shrink how many alerts we send
+  # until the serialized request fits a conservative character budget
+  # (~4 chars/token). Alerts are pre-sorted KEV-/severity-first, so trimming
+  # drops the least important detail. Counts are always reported in full.
+  REQ_CHAR_BUDGET=24000   # ~6000 tokens, safely under the 8000-token cap
+  TEXT_MAX=280            # cap on per-alert free-text (description/summary)
 
-  REQ=$(jq -nc \
-    --arg model "$MODEL" \
-    --arg sys "$SYSTEM_PROMPT" \
-    --arg usr "$USER_PROMPT" \
-    --argjson schema "$SCHEMA" '{
-      model: $model,
-      messages: [
-        { role: "system", content: $sys },
-        { role: "user", content: $usr }
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: { name: "release_risk_assessment", strict: true, schema: $schema }
-      },
-      max_tokens: 1500
-    }')
+  slim_codeql() {  # $1 = max items to keep
+    jq -c --argjson n "$1" --argjson t "$TEXT_MAX" '[ .[0:$n][] | {
+        number, rule_id, name, severity,
+        description: ((.description // "") | if length > $t then .[0:$t] + "…" else . end),
+        file, tool, url
+      } ]' <<< "$CODEQL"
+  }
+  slim_dependabot() {  # $1 = max items to keep
+    jq -c --argjson n "$1" --argjson t "$TEXT_MAX" '[ .[0:$n][] | {
+        number, severity, package, ecosystem, manifest, advisory, cve,
+        summary: ((.summary // "") | if length > $t then .[0:$t] + "…" else . end),
+        first_patched_version, known_exploited,
+        kev: (if .kev != null then { cve: .kev.cve, known_ransomware: .kev.known_ransomware, due_date: .kev.due_date } else null end),
+        url
+      } ]' <<< "$DEPENDABOT"
+  }
+
+  N_SENT="$MAX_ALERTS"
+  while :; do
+    CODEQL_SENT=$(slim_codeql "$N_SENT")
+    DEPENDABOT_SENT=$(slim_dependabot "$N_SENT")
+    CODEQL_SENT_N=$(jq 'length' <<< "$CODEQL_SENT")
+    DEPENDABOT_SENT_N=$(jq 'length' <<< "$DEPENDABOT_SENT")
+    CODEQL_TRUNC=$(( CODEQL_OPEN > CODEQL_SENT_N ? CODEQL_OPEN - CODEQL_SENT_N : 0 ))
+    DEPENDABOT_TRUNC=$(( DEPENDABOT_OPEN > DEPENDABOT_SENT_N ? DEPENDABOT_OPEN - DEPENDABOT_SENT_N : 0 ))
+
+    USER_PROMPT=$(jq -nr \
+      --arg ctx "$APP_CONTEXT" \
+      --arg repo "$REPOSITORY" \
+      --arg sha "${GITHUB_SHA:-n/a}" \
+      --argjson codeql "$CODEQL_SENT" \
+      --argjson dependabot "$DEPENDABOT_SENT" \
+      --argjson codeql_total "$CODEQL_OPEN" \
+      --argjson dependabot_total "$DEPENDABOT_OPEN" \
+      --argjson codeql_trunc "$CODEQL_TRUNC" \
+      --argjson dependabot_trunc "$DEPENDABOT_TRUNC" \
+      --argjson kev_size "$KEV_CATALOG_SIZE" \
+      --argjson kev_matched "$KEV_MATCHED" \
+      '"Release context: \($ctx)\n" +
+       "Repository: \($repo)\nCommit: \($sha)\n\n" +
+       "Open CodeQL alerts: \($codeql_total) (showing \($codeql | length), \($codeql_trunc) omitted for brevity).\n" +
+       "Open Dependabot alerts: \($dependabot_total) (showing \($dependabot | length), \($dependabot_trunc) omitted for brevity).\n" +
+       "CISA KEV catalog: \($kev_size) entries loaded; \($kev_matched) distinct CVE(s) across the open Dependabot alerts match the KEV catalog (actively exploited in the wild). Dependabot findings are annotated with \"known_exploited\" and a \"kev\" object when matched.\n\n" +
+       "CodeQL findings (JSON):\n" + ($codeql | tojson) + "\n\n" +
+       "Dependabot findings (JSON):\n" + ($dependabot | tojson) + "\n\n" +
+       "Assess the OVERALL risk of releasing this build to the public-facing site described above. Give decisive weight to any KEV-listed (known_exploited) vulnerability. Return your verdict per the required schema. In key_risks, list ALL release-relevant issues a reviewer should weigh — not only KEV-matched ones. Always include other serious findings (critical/high severity, internet-reachable CodeQL findings, and notable Dependabot vulnerabilities) alongside any KEV matches; do not drop them just because a KEV match exists. Order key_risks by importance (KEV-listed and critical first), set source to \"codeql\" or \"dependabot\", and call out KEV/known-exploited status in why_it_matters when applicable. In recommended_mitigations, give concrete, prioritized actions, remediating known-exploited vulnerabilities first."')
+
+    REQ=$(jq -nc \
+      --arg model "$MODEL" \
+      --arg sys "$SYSTEM_PROMPT" \
+      --arg usr "$USER_PROMPT" \
+      --argjson schema "$SCHEMA" '{
+        model: $model,
+        messages: [
+          { role: "system", content: $sys },
+          { role: "user", content: $usr }
+        ],
+        response_format: {
+          type: "json_schema",
+          json_schema: { name: "release_risk_assessment", strict: true, schema: $schema }
+        },
+        max_tokens: 1500
+      }')
+
+    # Fits, or we're already down to the minimum we can send — stop shrinking.
+    if [[ "${#REQ}" -le "$REQ_CHAR_BUDGET" || "$N_SENT" -le 1 ]]; then
+      break
+    fi
+    N_SENT=$(( N_SENT / 2 ))
+    (( N_SENT < 1 )) && N_SENT=1
+  done
+
+  if [[ "$CODEQL_TRUNC" -gt 0 || "$DEPENDABOT_TRUNC" -gt 0 ]]; then
+    echo "Trimmed alert detail to fit the model input limit: sending ${CODEQL_SENT_N} CodeQL + ${DEPENDABOT_SENT_N} Dependabot alert(s) (${CODEQL_TRUNC} + ${DEPENDABOT_TRUNC} omitted)."
+  fi
 
   echo "Requesting risk assessment from GitHub Models (${MODEL})..."
   RESP_FILE=$(mktemp)
@@ -460,7 +524,7 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   esac
   if [[ "$CODEQL_TRUNC" -gt 0 || "$DEPENDABOT_TRUNC" -gt 0 ]]; then
     echo ""
-    echo "_Note: ${CODEQL_TRUNC} CodeQL and ${DEPENDABOT_TRUNC} Dependabot alert(s) were omitted from the model prompt (max-alerts=${MAX_ALERTS}); counts above are complete._"
+    echo "_Note: ${CODEQL_TRUNC} CodeQL and ${DEPENDABOT_TRUNC} Dependabot alert(s) were omitted from the model prompt to stay within the \`max-alerts\` cap (${MAX_ALERTS}) and the model's input-token limit; counts above are complete._"
   fi
 } >> "$GITHUB_STEP_SUMMARY"
 fi
