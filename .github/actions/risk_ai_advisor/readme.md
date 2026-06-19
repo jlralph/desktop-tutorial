@@ -63,13 +63,17 @@ empty catalog and a warning — the advisor still runs on the rest of the signal
 ## Advisory vs. blocking
 
 By default the action is **advisory** — it always reports a verdict but never
-fails the job. Set `fail-on` to a comma-separated list of risk levels
-(`critical`, `high`, `medium`, `low`, `minimal`) to turn it into a release gate:
-the job fails when the AI risk level is one of those listed.
+fails the job. Set `fail-on` to a risk level (`critical`, `high`, `medium`,
+`low`, `minimal`) to turn it into a release gate. It is a **severity threshold**:
+the job fails when the AI risk level is at or above the level you set.
 
 ```yaml
-fail-on: "critical,high"   # block the release on a high-or-worse verdict
+fail-on: "high"   # block on high or critical
 ```
+
+So `fail-on: high` fails on `high` and `critical`; `fail-on: medium` fails on
+`medium`, `high`, and `critical`; and so on. If you pass several comma-separated
+levels, the least severe one is used as the threshold.
 
 > The AI verdict is a decision aid, not a guarantee. Treat a blocking
 > configuration as defense-in-depth alongside your other gates, and keep a human
@@ -95,7 +99,7 @@ logs a warning and proceeds on whatever signal it can read rather than failing.
 | `repository` | `${{ github.repository }}` | Repo to assess, `owner/repo`. |
 | `model` | `openai/gpt-4.1` | GitHub Models model, `{publisher}/{model}`. |
 | `app-context` | _(generic public-site text)_ | Description of what's being released and its exposure — sharper context, sharper verdict. |
-| `fail-on` | `""` | Comma-separated risk levels that fail the job. Empty = advisory only. |
+| `fail-on` | `""` | Severity threshold that fails the job — fails at this level or above (e.g. `high` → high + critical). Empty = advisory only. |
 | `max-alerts` | `75` | Max alerts of each type sent to the model (counts are always reported in full). |
 | `upload-report` | `true` | Upload the JSON report as an artifact. |
 | `report-retention-days` | `90` | Artifact retention period. |

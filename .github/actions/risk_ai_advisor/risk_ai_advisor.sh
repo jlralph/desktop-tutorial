@@ -304,13 +304,26 @@ CONFIDENCE=$(jq -r '.confidence' <<< "$VERDICT")
 SUMMARY=$(jq -r '.summary' <<< "$VERDICT")
 
 # --- Determine gate result ---------------------------------------------------
+# fail-on is a severity THRESHOLD, not an exact-match list: the job fails when the
+# verdict's risk level is at or above the threshold. So fail-on "high" fails on
+# high and critical; "medium" fails on medium, high, and critical; and so on. When
+# several levels are listed, the least severe one is used as the threshold (most
+# inclusive), so any of the listed levels — and anything more severe — fails.
+LEVEL_RANK='{"critical":0,"high":1,"medium":2,"low":3,"minimal":4}'
 FAIL_ON_COUNT=$(jq 'length' <<< "$FAIL_ON_JSON")
 if [[ "$FAIL_ON_COUNT" -eq 0 ]]; then
   RESULT="advisory"
-elif jq -e --arg r "$RISK_LEVEL" 'index($r)' <<< "$FAIL_ON_JSON" >/dev/null; then
-  RESULT="fail"
 else
-  RESULT="pass"
+  # Lower rank = more severe. Threshold = least severe (max rank) level listed.
+  THRESHOLD_RANK=$(jq -r --argjson rank "$LEVEL_RANK" '[ .[] | $rank[.] ] | max' <<< "$FAIL_ON_JSON")
+  THRESHOLD_LEVEL=$(jq -rn --argjson rank "$LEVEL_RANK" --argjson t "$THRESHOLD_RANK" \
+    '$rank | to_entries | map(select(.value == $t)) | .[0].key')
+  RISK_RANK=$(jq -nr --argjson rank "$LEVEL_RANK" --arg r "$RISK_LEVEL" '$rank[$r] // 99')
+  if [[ "$RISK_RANK" -le "$THRESHOLD_RANK" ]]; then
+    RESULT="fail"
+  else
+    RESULT="pass"
+  fi
 fi
 
 # --- Write JSON advisory report (audit evidence) -----------------------------
@@ -442,8 +455,8 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   fi
   case "$RESULT" in
     advisory) echo "**Result: ℹ️ ADVISORY** — reporting only; no \`fail-on\` threshold is set, so this never blocks." ;;
-    pass)     echo "**Result: ✅ PASS** — AI risk level \`${RISK_LEVEL}\` is below the \`fail-on\` threshold ($(jq -r 'join(", ")' <<< "$FAIL_ON_JSON"))." ;;
-    fail)     echo "**Result: ❌ FAIL** — AI risk level \`${RISK_LEVEL}\` meets the \`fail-on\` threshold ($(jq -r 'join(", ")' <<< "$FAIL_ON_JSON")). Blocking this release." ;;
+    pass)     echo "**Result: ✅ PASS** — AI risk level \`${RISK_LEVEL}\` is below the \`fail-on\` threshold (\`${THRESHOLD_LEVEL}\` and above)." ;;
+    fail)     echo "**Result: ❌ FAIL** — AI risk level \`${RISK_LEVEL}\` is at or above the \`fail-on\` threshold (\`${THRESHOLD_LEVEL}\` and above). Blocking this release." ;;
   esac
   if [[ "$CODEQL_TRUNC" -gt 0 || "$DEPENDABOT_TRUNC" -gt 0 ]]; then
     echo ""

@@ -45,10 +45,12 @@ inputs:
     default: "A build being released to a public-facing, internet-exposed website."
   fail-on:
     description: >-
-      Comma-separated AI risk levels that fail the job (e.g. 'critical,high').
-      Leave empty (default) for advisory-only behavior — the verdict is always
-      reported but never blocks. Valid levels: critical, high, medium, low,
-      minimal.
+      AI risk level at or above which the job fails, treated as a severity
+      THRESHOLD (e.g. 'high' fails on high and critical; 'medium' fails on
+      medium, high, and critical). Leave empty (default) for advisory-only
+      behavior — the verdict is always reported but never blocks. If multiple
+      comma-separated levels are given, the least severe one is used as the
+      threshold. Valid levels: critical, high, medium, low, minimal.
     required: false
     default: ""
   max-alerts:
