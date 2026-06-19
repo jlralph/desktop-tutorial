@@ -2,8 +2,10 @@
 
 A composite GitHub Action that uses an AI model to judge whether a build is safe
 to release to a **public-facing website**. It reads the repository's open
-**CodeQL code-scanning** alerts and open **Dependabot** alerts, sends them to a
-model via the [GitHub Models](https://docs.github.com/en/github-models)
+**CodeQL code-scanning** alerts and open **Dependabot** alerts, enriches the
+Dependabot findings with the [CISA Known Exploited Vulnerabilities (KEV)
+catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog), sends
+them to a model via the [GitHub Models](https://docs.github.com/en/github-models)
 inference API, and returns a single overall risk verdict — risk level,
 go/no-go recommendation, key risks, and recommended mitigations.
 
@@ -14,9 +16,14 @@ artifact named after that SHA, so the assessment can be evidenced later.
 
 1. Fetches open CodeQL alerts (`GET /repos/{owner}/{repo}/code-scanning/alerts`).
 2. Fetches open Dependabot alerts (`GET /repos/{owner}/{repo}/dependabot/alerts`).
-3. Normalizes and severity-sorts them, then asks the model to weigh them
+3. Downloads the CISA KEV catalog and flags any Dependabot alert whose CVE is
+   listed as actively exploited in the wild (`known_exploited`), attaching the
+   KEV record (date added, due date, ransomware use, required action). Matched
+   alerts sort first so they survive `max-alerts` truncation, and the model is
+   told to weigh them decisively toward blocking.
+4. Normalizes and severity-sorts them, then asks the model to weigh them
    together in the context of an internet-exposed deployment.
-4. Receives a **structured** verdict (enforced via the inference API's
+5. Receives a **structured** verdict (enforced via the inference API's
    `json_schema` response format):
 
    ```json
@@ -32,10 +39,26 @@ artifact named after that SHA, so the assessment can be evidenced later.
    }
    ```
 
-5. Writes a job summary, a JSON report artifact, and step outputs.
+6. Writes a job summary, a JSON report artifact, and step outputs. The summary
+   includes a dedicated table of KEV-listed (known-exploited) CVEs when any are
+   matched.
 
 If there are **no** open alerts, the action records a deterministic
 `minimal` / `go` verdict and skips the model call.
+
+## CISA KEV enrichment
+
+Before calling the model, the action fetches the
+[CISA KEV catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
+and matches each open Dependabot alert's CVE against it. Matches are annotated
+with `known_exploited: true` and a `kev` record, surfaced in a dedicated summary
+table, and reported via the `kev-matched` output. A KEV match means confirmed
+in-the-wild exploitation, so the model is instructed to treat it as a strong
+escalating factor toward blocking a public-facing release.
+
+The catalog is cached across runs via `actions/cache`, keyed per UTC day, so only
+the first run each day downloads it. A network or parse failure degrades to an
+empty catalog and a warning — the advisor still runs on the rest of the signal.
 
 ## Advisory vs. blocking
 
@@ -87,6 +110,7 @@ logs a warning and proceeds on whatever signal it can read rather than failing.
 | `summary` | One-line AI summary. |
 | `codeql-open` | Open CodeQL alerts considered. |
 | `dependabot-open` | Open Dependabot alerts considered. |
+| `kev-matched` | Open Dependabot alerts whose CVE is in the CISA KEV catalog. |
 | `audited-commit` | Commit SHA assessed. |
 | `report-path` | Path to the JSON report. |
 
@@ -130,5 +154,6 @@ jobs:
           echo "Result:         ${{ steps.advisor.outputs.result }}"
           echo "Risk level:     ${{ steps.advisor.outputs.risk-level }}"
           echo "Recommendation: ${{ steps.advisor.outputs.recommendation }}"
+          echo "KEV matched:    ${{ steps.advisor.outputs.kev-matched }}"
           echo "Summary:        ${{ steps.advisor.outputs.summary }}"
 ```
