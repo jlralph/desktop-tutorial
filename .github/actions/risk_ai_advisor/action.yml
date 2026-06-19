@@ -87,7 +87,7 @@ outputs:
     description: "Number of open Dependabot alerts considered."
     value: ${{ steps.advise.outputs.dependabot-open }}
   kev-matched:
-    description: "Number of open Dependabot alerts whose CVE is in the CISA KEV catalog (actively exploited)."
+    description: "Number of distinct CVEs across open Dependabot alerts that are in the CISA KEV catalog (actively exploited)."
     value: ${{ steps.advise.outputs.kev-matched }}
   audited-commit:
     description: "The commit SHA this assessment is tied to."

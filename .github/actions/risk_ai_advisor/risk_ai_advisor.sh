@@ -168,8 +168,10 @@ CODEQL_OPEN=$(jq 'length' <<< "$CODEQL")
 DEPENDABOT_OPEN=$(jq 'length' <<< "$DEPENDABOT")
 TOTAL_OPEN=$(( CODEQL_OPEN + DEPENDABOT_OPEN ))
 
-# How many open Dependabot alerts are in the CISA KEV catalog (actively exploited).
-KEV_MATCHED=$(jq '[ .[] | select(.known_exploited) ] | length' <<< "$DEPENDABOT")
+# How many distinct CVEs across the open Dependabot alerts are in the CISA KEV
+# catalog (actively exploited). Counted distinct-by-CVE so it matches the deduped
+# KEV table below (several alerts can share one CVE).
+KEV_MATCHED=$(jq '[ .[] | select(.known_exploited) | .cve ] | unique | length' <<< "$DEPENDABOT")
 
 # Severity tallies (for the summary table; computed over all alerts, not the truncated set).
 count_sev() { jq --arg s "$1" '[ .[] | select(.severity == $s) ] | length' <<< "$2"; }
@@ -243,7 +245,7 @@ else
      "Repository: \($repo)\nCommit: \($sha)\n\n" +
      "Open CodeQL alerts: \($codeql_total) (showing \($codeql | length), \($codeql_trunc) omitted for brevity).\n" +
      "Open Dependabot alerts: \($dependabot_total) (showing \($dependabot | length), \($dependabot_trunc) omitted for brevity).\n" +
-     "CISA KEV catalog: \($kev_size) entries loaded; \($kev_matched) open Dependabot alert(s) match the KEV catalog (actively exploited in the wild). Dependabot findings are annotated with \"known_exploited\" and a \"kev\" object when matched.\n\n" +
+     "CISA KEV catalog: \($kev_size) entries loaded; \($kev_matched) distinct CVE(s) across the open Dependabot alerts match the KEV catalog (actively exploited in the wild). Dependabot findings are annotated with \"known_exploited\" and a \"kev\" object when matched.\n\n" +
      "CodeQL findings (JSON):\n" + ($codeql | tojson) + "\n\n" +
      "Dependabot findings (JSON):\n" + ($dependabot | tojson) + "\n\n" +
      "Assess the OVERALL risk of releasing this build to the public-facing site described above. Give decisive weight to any KEV-listed (known_exploited) vulnerability. Return your verdict per the required schema. In key_risks, list ALL release-relevant issues a reviewer should weigh — not only KEV-matched ones. Always include other serious findings (critical/high severity, internet-reachable CodeQL findings, and notable Dependabot vulnerabilities) alongside any KEV matches; do not drop them just because a KEV match exists. Order key_risks by importance (KEV-listed and critical first), set source to \"codeql\" or \"dependabot\", and call out KEV/known-exploited status in why_it_matters when applicable. In recommended_mitigations, give concrete, prioritized actions, remediating known-exploited vulnerabilities first."')
@@ -403,7 +405,7 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo ""
   fi
   if [[ "$KEV_MATCHED" -gt 0 ]]; then
-    echo "> 🚨 **${KEV_MATCHED} open Dependabot alert(s) are in the CISA KEV catalog** — these CVEs have confirmed in-the-wild exploitation and should be remediated before release."
+    echo "> 🚨 **${KEV_MATCHED} known-exploited CVE(s) (CISA KEV) found in open Dependabot alerts** — these CVEs have confirmed in-the-wild exploitation and should be remediated before release."
     echo ""
     echo "| CVE | Package | Severity | Ransomware | KEV due date |"
     echo "|---|---|---|---|---|"

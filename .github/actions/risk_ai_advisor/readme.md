@@ -110,7 +110,7 @@ logs a warning and proceeds on whatever signal it can read rather than failing.
 | `summary` | One-line AI summary. |
 | `codeql-open` | Open CodeQL alerts considered. |
 | `dependabot-open` | Open Dependabot alerts considered. |
-| `kev-matched` | Open Dependabot alerts whose CVE is in the CISA KEV catalog. |
+| `kev-matched` | Distinct CVEs across open Dependabot alerts that are in the CISA KEV catalog. |
 | `audited-commit` | Commit SHA assessed. |
 | `report-path` | Path to the JSON report. |
 
