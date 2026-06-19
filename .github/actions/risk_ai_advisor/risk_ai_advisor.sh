@@ -71,11 +71,19 @@ DEPENDABOT_RAW=$(fetch_alerts "/repos/${REPOSITORY}/dependabot/alerts?state=open
 # weigh them heavily. A network/parse failure degrades to an empty catalog so
 # the advisor still runs on the rest of the signal.
 KEV_URL="https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
-fetch_kev() {
-  local raw
+
+# Build the compact CVE -> KEV-record map at $1 (a file path). Reuses a valid
+# cached copy when present (the caller persists the dir across runs via
+# actions/cache, keyed per-day), otherwise downloads and writes it. Degrades to
+# an empty map ({}) on any failure so the advisor still runs.
+build_kev_map() {
+  local out="$1" raw
+  if [[ -s "$out" ]] && jq -e 'type == "object"' "$out" >/dev/null 2>&1; then
+    echo "Reusing cached CISA KEV catalog (${out})." >&2
+    return 0
+  fi
   if raw=$(curl -sSf --max-time 30 "$KEV_URL" 2>/dev/null) \
      && jq -e '.vulnerabilities | type == "array"' <<< "$raw" >/dev/null 2>&1; then
-    # CVE id -> compact KEV record, for O(1) lookup during enrichment.
     jq -c '[ .vulnerabilities[] | {
         key: .cveID,
         value: {
@@ -86,14 +94,26 @@ fetch_kev() {
           known_ransomware: .knownRansomwareCampaignUse,
           required_action: .requiredAction
         }
-      } ] | from_entries'  <<< "$raw"
+      } ] | from_entries'  <<< "$raw" > "$out"
   else
     echo "::warning::Could not fetch/parse the CISA KEV catalog; proceeding without known-exploited enrichment." >&2
-    echo "{}"
+    echo "{}" > "$out"
   fi
 }
-KEV_MAP=$(fetch_kev)
-KEV_CATALOG_SIZE=$(jq 'length' <<< "$KEV_MAP")
+
+# When the action supplies a cache dir (persisted across runs by actions/cache),
+# keep the map there so repeat runs skip the download; otherwise use a temp file.
+# The map is large (1600+ entries) and is fed to jq via --slurpfile rather than
+# --argjson below: that big a value in argv overflows ARG_MAX ("Argument list
+# too long"). Here-strings (<<<) go to stdin, so reading its length is unaffected.
+if [[ -n "${KEV_CACHE_DIR:-}" ]]; then
+  mkdir -p "$KEV_CACHE_DIR"
+  KEV_FILE="${KEV_CACHE_DIR}/kev-map.json"
+else
+  KEV_FILE=$(mktemp)
+fi
+build_kev_map "$KEV_FILE"
+KEV_CATALOG_SIZE=$(jq 'length' "$KEV_FILE")
 echo "Loaded ${KEV_CATALOG_SIZE} CISA KEV catalog entries."
 
 # --- Normalize alerts into a compact, model-friendly shape ------------------
@@ -116,7 +136,8 @@ CODEQL=$(jq -c --argjson rank "$SEV_RANK" '
 # Dependabot alerts are enriched with CISA KEV data: any whose CVE is in the
 # catalog is flagged known_exploited and carries the KEV record. Known-exploited
 # alerts sort first so they survive max-alerts truncation.
-DEPENDABOT=$(jq -c --argjson rank "$SEV_RANK" --argjson kev "$KEV_MAP" '
+DEPENDABOT=$(jq -c --argjson rank "$SEV_RANK" --slurpfile kevwrap "$KEV_FILE" '
+  ($kevwrap[0] // {}) as $kev |
   [ .[] | (.security_advisory.cve_id // "") as $cve | {
       number: .number,
       severity: ((.security_vulnerability.severity // .security_advisory.severity // "unknown") | ascii_downcase),
@@ -132,6 +153,8 @@ DEPENDABOT=$(jq -c --argjson rank "$SEV_RANK" --argjson kev "$KEV_MAP" '
       url: .html_url
     } ]
   | sort_by([(.known_exploited | not), ($rank[.severity] // 5)])' <<< "$DEPENDABOT_RAW")
+# Keep the file when it lives in the cache dir so actions/cache can persist it.
+[[ -z "${KEV_CACHE_DIR:-}" ]] && rm -f "$KEV_FILE"
 
 CODEQL_OPEN=$(jq 'length' <<< "$CODEQL")
 DEPENDABOT_OPEN=$(jq 'length' <<< "$DEPENDABOT")
