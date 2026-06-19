@@ -63,6 +63,39 @@ echo "Collecting open security alerts for ${REPOSITORY} (commit ${GITHUB_SHA:-n/
 CODEQL_RAW=$(fetch_alerts "/repos/${REPOSITORY}/code-scanning/alerts?state=open&per_page=100" "$GH_TOKEN" "CodeQL code-scanning alerts")
 DEPENDABOT_RAW=$(fetch_alerts "/repos/${REPOSITORY}/dependabot/alerts?state=open&per_page=100" "$DEPENDABOT_TOKEN" "Dependabot alerts")
 
+# --- Fetch CISA KEV catalog -------------------------------------------------
+# The CISA Known Exploited Vulnerabilities (KEV) catalog lists CVEs with
+# evidence of active, in-the-wild exploitation. A Dependabot alert whose CVE
+# appears here is a major risk amplifier (proven exploitation, often with a
+# federal remediation due date), so we annotate matches and tell the model to
+# weigh them heavily. A network/parse failure degrades to an empty catalog so
+# the advisor still runs on the rest of the signal.
+KEV_URL="https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+fetch_kev() {
+  local raw
+  if raw=$(curl -sSf --max-time 30 "$KEV_URL" 2>/dev/null) \
+     && jq -e '.vulnerabilities | type == "array"' <<< "$raw" >/dev/null 2>&1; then
+    # CVE id -> compact KEV record, for O(1) lookup during enrichment.
+    jq -c '[ .vulnerabilities[] | {
+        key: .cveID,
+        value: {
+          cve: .cveID,
+          name: .vulnerabilityName,
+          date_added: .dateAdded,
+          due_date: .dueDate,
+          known_ransomware: .knownRansomwareCampaignUse,
+          required_action: .requiredAction
+        }
+      } ] | from_entries'  <<< "$raw"
+  else
+    echo "::warning::Could not fetch/parse the CISA KEV catalog; proceeding without known-exploited enrichment." >&2
+    echo "{}"
+  fi
+}
+KEV_MAP=$(fetch_kev)
+KEV_CATALOG_SIZE=$(jq 'length' <<< "$KEV_MAP")
+echo "Loaded ${KEV_CATALOG_SIZE} CISA KEV catalog entries."
+
 # --- Normalize alerts into a compact, model-friendly shape ------------------
 # severity rank for ordering (lower = more severe)
 SEV_RANK='{"critical":0,"high":1,"error":1,"medium":2,"warning":2,"moderate":2,"low":3,"note":4,"warning_low":4}'
@@ -80,23 +113,32 @@ CODEQL=$(jq -c --argjson rank "$SEV_RANK" '
     } ]
   | sort_by($rank[.severity] // 5)' <<< "$CODEQL_RAW")
 
-DEPENDABOT=$(jq -c --argjson rank "$SEV_RANK" '
-  [ .[] | {
+# Dependabot alerts are enriched with CISA KEV data: any whose CVE is in the
+# catalog is flagged known_exploited and carries the KEV record. Known-exploited
+# alerts sort first so they survive max-alerts truncation.
+DEPENDABOT=$(jq -c --argjson rank "$SEV_RANK" --argjson kev "$KEV_MAP" '
+  [ .[] | (.security_advisory.cve_id // "") as $cve | {
       number: .number,
       severity: ((.security_vulnerability.severity // .security_advisory.severity // "unknown") | ascii_downcase),
       package: (.dependency.package.name // "unknown"),
       ecosystem: (.dependency.package.ecosystem // "unknown"),
       manifest: (.dependency.manifest_path // "n/a"),
       advisory: (.security_advisory.cve_id // .security_advisory.ghsa_id // "N/A"),
+      cve: $cve,
       summary: (.security_advisory.summary // ""),
       first_patched_version: (.security_vulnerability.first_patched_version.identifier // "none"),
+      known_exploited: ($cve != "" and ($kev[$cve] != null)),
+      kev: (if $cve != "" then $kev[$cve] else null end),
       url: .html_url
     } ]
-  | sort_by($rank[.severity] // 5)' <<< "$DEPENDABOT_RAW")
+  | sort_by([(.known_exploited | not), ($rank[.severity] // 5)])' <<< "$DEPENDABOT_RAW")
 
 CODEQL_OPEN=$(jq 'length' <<< "$CODEQL")
 DEPENDABOT_OPEN=$(jq 'length' <<< "$DEPENDABOT")
 TOTAL_OPEN=$(( CODEQL_OPEN + DEPENDABOT_OPEN ))
+
+# How many open Dependabot alerts are in the CISA KEV catalog (actively exploited).
+KEV_MATCHED=$(jq '[ .[] | select(.known_exploited) ] | length' <<< "$DEPENDABOT")
 
 # Severity tallies (for the summary table; computed over all alerts, not the truncated set).
 count_sev() { jq --arg s "$1" '[ .[] | select(.severity == $s) ] | length' <<< "$2"; }
@@ -152,7 +194,7 @@ else
     required: ["risk_level","recommendation","confidence","summary","key_risks","recommended_mitigations"]
   }')
 
-  SYSTEM_PROMPT="You are a principal application security engineer acting as a release gatekeeper. You assess whether a software build is safe to release to a public-facing, internet-exposed website by reasoning over open static-analysis (CodeQL) findings and open dependency (Dependabot) vulnerabilities. Weigh exploitability from the internet, exposure of the affected code/dependency, severity, and whether fixes are available. Be decisive and concise. Reserve 'critical' for issues that are likely remotely exploitable on a public site with serious impact. Output only what the provided JSON schema allows."
+  SYSTEM_PROMPT="You are a principal application security engineer acting as a release gatekeeper. You assess whether a software build is safe to release to a public-facing, internet-exposed website by reasoning over open static-analysis (CodeQL) findings and open dependency (Dependabot) vulnerabilities. Weigh exploitability from the internet, exposure of the affected code/dependency, severity, and whether fixes are available. Dependabot findings may be annotated with \"known_exploited\": true and a \"kev\" object: these CVEs appear in the CISA Known Exploited Vulnerabilities (KEV) catalog, meaning active in-the-wild exploitation is confirmed. Treat any KEV-listed vulnerability as a strong escalating factor — it should push the risk level and recommendation decisively toward blocking on a public-facing site, especially when knownRansomwareCampaignUse is 'Known' or a fix is available. Be decisive and concise. Reserve 'critical' for issues that are likely remotely exploitable on a public site with serious impact (KEV-listed, internet-reachable vulnerabilities are prime candidates). Output only what the provided JSON schema allows."
 
   USER_PROMPT=$(jq -nr \
     --arg ctx "$APP_CONTEXT" \
@@ -164,13 +206,16 @@ else
     --argjson dependabot_total "$DEPENDABOT_OPEN" \
     --argjson codeql_trunc "$CODEQL_TRUNC" \
     --argjson dependabot_trunc "$DEPENDABOT_TRUNC" \
+    --argjson kev_size "$KEV_CATALOG_SIZE" \
+    --argjson kev_matched "$KEV_MATCHED" \
     '"Release context: \($ctx)\n" +
      "Repository: \($repo)\nCommit: \($sha)\n\n" +
      "Open CodeQL alerts: \($codeql_total) (showing \($codeql | length), \($codeql_trunc) omitted for brevity).\n" +
-     "Open Dependabot alerts: \($dependabot_total) (showing \($dependabot | length), \($dependabot_trunc) omitted for brevity).\n\n" +
+     "Open Dependabot alerts: \($dependabot_total) (showing \($dependabot | length), \($dependabot_trunc) omitted for brevity).\n" +
+     "CISA KEV catalog: \($kev_size) entries loaded; \($kev_matched) open Dependabot alert(s) match the KEV catalog (actively exploited in the wild). Dependabot findings are annotated with \"known_exploited\" and a \"kev\" object when matched.\n\n" +
      "CodeQL findings (JSON):\n" + ($codeql | tojson) + "\n\n" +
      "Dependabot findings (JSON):\n" + ($dependabot | tojson) + "\n\n" +
-     "Assess the OVERALL risk of releasing this build to the public-facing site described above. Return your verdict per the required schema. In key_risks, list the most release-relevant issues (set source to \"codeql\" or \"dependabot\"). In recommended_mitigations, give concrete, prioritized actions."')
+     "Assess the OVERALL risk of releasing this build to the public-facing site described above. Give decisive weight to any KEV-listed (known_exploited) vulnerability. Return your verdict per the required schema. In key_risks, list the most release-relevant issues (set source to \"codeql\" or \"dependabot\"; call out KEV/known-exploited status in why_it_matters). In recommended_mitigations, give concrete, prioritized actions, remediating known-exploited vulnerabilities first."')
 
   REQ=$(jq -nc \
     --arg model "$MODEL" \
@@ -254,6 +299,8 @@ jq -n \
   --argjson dependabot_open "$DEPENDABOT_OPEN" \
   --argjson codeql_truncated "$CODEQL_TRUNC" \
   --argjson dependabot_truncated "$DEPENDABOT_TRUNC" \
+  --argjson kev_catalog_size "$KEV_CATALOG_SIZE" \
+  --argjson kev_matched "$KEV_MATCHED" \
   --argjson verdict "$VERDICT" \
   --argjson codeql "$CODEQL" \
   --argjson dependabot "$DEPENDABOT" \
@@ -279,7 +326,9 @@ jq -n \
       codeql_open: $codeql_open,
       dependabot_open: $dependabot_open,
       codeql_truncated: $codeql_truncated,
-      dependabot_truncated: $dependabot_truncated
+      dependabot_truncated: $dependabot_truncated,
+      kev_catalog_size: $kev_catalog_size,
+      kev_matched: $kev_matched
     },
     verdict: $verdict,
     alerts: {
@@ -310,7 +359,16 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   echo "| Model | \`${MODEL_USED}\` |"
   echo "| Open CodeQL alerts | ${CODEQL_OPEN} |"
   echo "| Open Dependabot alerts | ${DEPENDABOT_OPEN} |"
+  echo "| 🚨 Known-exploited (CISA KEV) | ${KEV_MATCHED} |"
   echo ""
+  if [[ "$KEV_MATCHED" -gt 0 ]]; then
+    echo "> 🚨 **${KEV_MATCHED} open Dependabot alert(s) are in the CISA KEV catalog** — these CVEs have confirmed in-the-wild exploitation and should be remediated before release."
+    echo ""
+    echo "| CVE | Package | Severity | Ransomware | KEV due date |"
+    echo "|---|---|---|---|---|"
+    jq -r '.[] | select(.known_exploited) | "| \(.cve) | \(.package) | \(.severity) | \(.kev.known_ransomware // "Unknown") | \(.kev.due_date // "n/a") |"' <<< "$DEPENDABOT"
+    echo ""
+  fi
   echo "### $(risk_emoji "$RISK_LEVEL") Verdict: ${RISK_LEVEL^^} — recommendation: \`${RECOMMENDATION}\` (confidence: ${CONFIDENCE})"
   echo ""
   echo "> ${SUMMARY}"
@@ -359,6 +417,7 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   echo "recommendation=${RECOMMENDATION}"
   echo "codeql-open=${CODEQL_OPEN}"
   echo "dependabot-open=${DEPENDABOT_OPEN}"
+  echo "kev-matched=${KEV_MATCHED}"
   echo "audited-commit=${GITHUB_SHA:-}"
   echo "report-path=${REPORT_PATH}"
   # summary may contain characters; clamp to one line for the output value.
