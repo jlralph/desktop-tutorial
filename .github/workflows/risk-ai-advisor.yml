@@ -19,16 +19,10 @@ on:
         type: choice
         options:
           - "openai/gpt-4.1"
-          - "openai/gpt-5"
           - "openai/gpt-4.1-mini"
           - "openai/gpt-4o"
           - "openai/gpt-4o-mini"
           - "openai/o4-mini"
-          - "meta/Llama-3.3-70B-Instruct"
-          - "mistral-ai/Mistral-Large-2411"
-          - "microsoft/Phi-4"
-          - "deepseek/DeepSeek-V3-0324"
-          - "xai/grok-3"
   push:
     branches: [main]
   pull_request:
