@@ -43,16 +43,19 @@ done < <(jq -r '.[]' <<< "$FAIL_ON_JSON")
 # --- Fetch alerts -----------------------------------------------------------
 # Returns a JSON array on stdout. Missing/forbidden (feature disabled or token
 # lacks scope) degrades to an empty array with a warning, so the advisor still
-# runs on whatever signal it can read.
+# runs on whatever signal it can read. Writes "ok" or "fail" to the status file
+# ($4) so the caller can distinguish "no alerts" from "couldn't read alerts".
 fetch_alerts() {
-  local path="$1" token="$2" name="$3" raw err
+  local path="$1" token="$2" name="$3" statusfile="$4" raw err
   err="$(mktemp)"
   if raw=$(GH_TOKEN="$token" gh api --paginate \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "$path" 2>"$err"); then
+    echo "ok" > "$statusfile"
     jq -s 'add // []' <<< "$raw"
   else
+    echo "fail" > "$statusfile"
     echo "::warning::Could not read ${name} for ${REPOSITORY}; proceeding without it. Detail: $(tr '\n' ' ' < "$err")" >&2
     echo "[]"
   fi
@@ -60,8 +63,13 @@ fetch_alerts() {
 }
 
 echo "Collecting open security alerts for ${REPOSITORY} (commit ${GITHUB_SHA:-n/a})..."
-CODEQL_RAW=$(fetch_alerts "/repos/${REPOSITORY}/code-scanning/alerts?state=open&per_page=100" "$GH_TOKEN" "CodeQL code-scanning alerts")
-DEPENDABOT_RAW=$(fetch_alerts "/repos/${REPOSITORY}/dependabot/alerts?state=open&per_page=100" "$DEPENDABOT_TOKEN" "Dependabot alerts")
+CODEQL_STATUS_FILE=$(mktemp)
+DEPENDABOT_STATUS_FILE=$(mktemp)
+CODEQL_RAW=$(fetch_alerts "/repos/${REPOSITORY}/code-scanning/alerts?state=open&per_page=100" "$GH_TOKEN" "CodeQL code-scanning alerts" "$CODEQL_STATUS_FILE")
+DEPENDABOT_RAW=$(fetch_alerts "/repos/${REPOSITORY}/dependabot/alerts?state=open&per_page=100" "$DEPENDABOT_TOKEN" "Dependabot alerts" "$DEPENDABOT_STATUS_FILE")
+CODEQL_READABLE=$(cat "$CODEQL_STATUS_FILE")
+DEPENDABOT_READABLE=$(cat "$DEPENDABOT_STATUS_FILE")
+rm -f "$CODEQL_STATUS_FILE" "$DEPENDABOT_STATUS_FILE"
 
 # --- Fetch CISA KEV catalog -------------------------------------------------
 # The CISA Known Exploited Vulnerabilities (KEV) catalog lists CVEs with
@@ -324,6 +332,8 @@ jq -n \
   --argjson dependabot_truncated "$DEPENDABOT_TRUNC" \
   --argjson kev_catalog_size "$KEV_CATALOG_SIZE" \
   --argjson kev_matched "$KEV_MATCHED" \
+  --arg codeql_readable "$CODEQL_READABLE" \
+  --arg dependabot_readable "$DEPENDABOT_READABLE" \
   --argjson verdict "$VERDICT" \
   --argjson codeql "$CODEQL" \
   --argjson dependabot "$DEPENDABOT" \
@@ -348,6 +358,8 @@ jq -n \
     inputs: {
       codeql_open: $codeql_open,
       dependabot_open: $dependabot_open,
+      codeql_readable: ($codeql_readable == "ok"),
+      dependabot_readable: ($dependabot_readable == "ok"),
       codeql_truncated: $codeql_truncated,
       dependabot_truncated: $dependabot_truncated,
       kev_catalog_size: $kev_catalog_size,
@@ -380,10 +392,16 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   echo "| **Audited commit** | \`${GITHUB_SHA:-n/a}\` |"
   echo "| Assessed at | ${NOW_ISO} |"
   echo "| Model | \`${MODEL_USED}\` |"
-  echo "| Open CodeQL alerts | ${CODEQL_OPEN} |"
-  echo "| Open Dependabot alerts | ${DEPENDABOT_OPEN} |"
+  codeql_note=""; [[ "$CODEQL_READABLE" == "fail" ]] && codeql_note=" ⚠️ not readable"
+  dependabot_note=""; [[ "$DEPENDABOT_READABLE" == "fail" ]] && dependabot_note=" ⚠️ not readable"
+  echo "| Open CodeQL alerts | ${CODEQL_OPEN}${codeql_note} |"
+  echo "| Open Dependabot alerts | ${DEPENDABOT_OPEN}${dependabot_note} |"
   echo "| 🚨 Known-exploited (CISA KEV) | ${KEV_MATCHED} |"
   echo ""
+  if [[ "$DEPENDABOT_READABLE" == "fail" ]]; then
+    echo "> ⚠️ **Dependabot alerts could not be read**, so KEV matching had nothing to check (KEV applies to Dependabot CVEs). The default \`GITHUB_TOKEN\` cannot read Dependabot alerts — set the \`dependabot-token\` input to a fine-grained PAT (repo permissions \"Dependabot alerts: read\" + \"Metadata: read\") or a GitHub App token, and ensure Dependabot alerts are enabled for the repository."
+    echo ""
+  fi
   if [[ "$KEV_MATCHED" -gt 0 ]]; then
     echo "> 🚨 **${KEV_MATCHED} open Dependabot alert(s) are in the CISA KEV catalog** — these CVEs have confirmed in-the-wild exploitation and should be remediated before release."
     echo ""
