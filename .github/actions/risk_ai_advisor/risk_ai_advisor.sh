@@ -407,7 +407,7 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo ""
     echo "| CVE | Package | Severity | Ransomware | KEV due date |"
     echo "|---|---|---|---|---|"
-    jq -r '.[] | select(.known_exploited) | "| \(.cve) | \(.package) | \(.severity) | \(.kev.known_ransomware // "Unknown") | \(.kev.due_date // "n/a") |"' <<< "$DEPENDABOT"
+    jq -r '[ .[] | select(.known_exploited) ] | unique_by(.cve) | .[] | "| \(.cve) | \(.package) | \(.severity) | \(.kev.known_ransomware // "Unknown") | \(.kev.due_date // "n/a") |"' <<< "$DEPENDABOT"
     echo ""
   fi
   echo "### $(risk_emoji "$RISK_LEVEL") Verdict: ${RISK_LEVEL^^} — recommendation: \`${RECOMMENDATION}\` (confidence: ${CONFIDENCE})"
