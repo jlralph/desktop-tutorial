@@ -1,67 +1,78 @@
-# security-scan-workflows-examples
+# security-scan-workflow-examples
 
-A Spring Boot web application with a fully automated CI and security scanning pipeline.
+A Spring Boot web application instrumented with automated CI, dependency graph submission, and a broad security scanning pipeline.
 
 ## Stack
 
-- **Java 25** / **Spring Boot 4.0.6**
-- **Maven** (build & dependency management)
+- **Java 25**
+- **Spring Boot 4.0.6**
+- **Maven**
 - Spring Web, Spring Boot Actuator, Spring Boot Test
+- Includes an intentionally vulnerable dependency: `org.apache.logging.log4j:log4j-core:2.14.1` for security scan demonstration
 
-## CI/CD & Security Workflows
+## Application snapshot
 
-### Build
-| Workflow | Trigger | Description |
-|---|---|---|
-| Java CI with Maven | manual | Builds the project with Maven and uploads the dependency graph to GitHub |
+- `src/main/java/com/example/App.java` — Spring Boot entry point + greeting helper
+- `src/main/java/com/example/HelloController.java` — REST endpoints
+  - GET `/`
+  - GET `/hello/{name}`
+- `src/test/java/com/example/AppTest.java` — unit tests for greeting behavior
 
-### SAST (Static Analysis)
-| Workflow | Trigger | Description |
-|---|---|---|
-| CodeQL | manual | GitHub's semantic code analysis for vulnerability detection |
-| Codacy | manual | Code quality and security analysis |
-| OSV-Scanner | manual | Open-source vulnerability scanning against the OSV database |
-| OSV-Scanner (Container) | manual | Scans a container image for vulnerabilities and syncs findings to GitHub Issues |
-| OWASP Dependency Check | manual | Checks dependencies against known CVEs and syncs findings to GitHub Issues (create, update, close) |
-| Poutine | manual | Supply-chain security analysis for GitHub Actions |
+## CI / GitHub Actions
 
-### DAST (Dynamic Analysis)
-| Workflow | Trigger | Description |
-|---|---|---|
-| Checkmarx ZAP | manual | Builds and starts the Spring Boot app, then runs a full ZAP scan against `http://localhost:8080` |
-| Dastardly | manual | Lightweight DAST scan using Burp Suite's Dastardly |
+- `.github/workflows/maven.yml` — manual Java CI build with Maven and dependency graph submission
+- `.github/workflows/dependency-graph.yml` — dependency graph upload on push
+
+## SAST (Static Analysis)
+
+- `.github/workflows/sast-codeql.yml`
+- `.github/workflows/sast-codacy.yml`
+- `.github/workflows/sast-osv-scanner.yml`
+- `.github/workflows/sast-osv-scanner-container.yml`
+- `.github/workflows/sast-owasp-dependency-check.yml`
+- `.github/workflows/sast-poutine.yml`
+
+## DAST (Dynamic Analysis)
+
+- `.github/workflows/dast-zap.yml`
+- `.github/workflows/dast-dastardly.yml`
+
+## Risk and compliance workflows
+
+- `.github/workflows/risk-ai-advisor.yml`
+- `.github/workflows/risk-sla-gate.yml`
 
 ## Custom Actions
 
-| Action | Description |
-|---|---|
-| [my-action](.github/actions/my-action/) | General-purpose action (Node 20 runtime) |
-| [sast-osv-scanner-container](.github/actions/sast-osv-scanner-container/) | Scans a container image with OSV Scanner and syncs GitHub Issues |
-| [sast-owasp-dependency-check](.github/actions/sast-owasp-dependency-check/) | Builds the Spring Boot app, runs an OWASP Dependency Check scan, and syncs CVE findings to GitHub Issues |
-| [dast-dastardly](.github/actions/dast-dastardly/) | Builds the Spring Boot app and runs a Dastardly DAST scan |
+- `.github/actions/my-action/`
+- `.github/actions/risk_ai_advisor/`
+- `.github/actions/risk_sla_gate/`
+- `.github/actions/sast-osv-scanner-container/`
+- `.github/actions/sast-owasp-dependency-check/`
+- `.github/actions/dast-dastardly/`
 
 ## Scripts
 
-| Script | Description |
-|---|---|
-| [scripts/create-cve-issues.sh](scripts/create-cve-issues.sh) | Parses an OWASP Dependency Check JSON report and syncs findings to GitHub Issues — creates issues for new CVEs, updates issues when vulnerable packages change, and closes issues for CVEs no longer detected |
+- `scripts/create-cve-issues.sh` — parses OWASP Dependency Check JSON output and synchronizes GitHub issues for detected CVEs
 
 ## Badges
 
-[![DAST (Checkmarx ZAP)](https://github.com/jlralph/desktop-tutorial/actions/workflows/dast-zap.yml/badge.svg)](https://github.com/jlralph/desktop-tutorial/actions/workflows/dast-zap.yml)
+[![Java CI with Maven](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/maven.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/maven.yml)
 
-[![DAST (Dastardly)](https://github.com/jlralph/desktop-tutorial/actions/workflows/dast-dastardly.yml/badge.svg)](https://github.com/jlralph/desktop-tutorial/actions/workflows/dast-dastardly.yml)
+[![Dependency Graph](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/dependency-graph.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/dependency-graph.yml)
 
-[![SAST (Codacy)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-codacy.yml/badge.svg)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-codacy.yml)
+[![SAST (CodeQL)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-codeql.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-codeql.yml)
 
-[![SAST (CodeQL)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-codeql.yml/badge.svg)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-codeql.yml)
+[![SAST (Codacy)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-codacy.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-codacy.yml)
 
-[![SAST (OSV-Scanner)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-osv-scanner.yml/badge.svg)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-osv-scanner.yml)
+[![SAST (OSV-Scanner)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-osv-scanner.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-osv-scanner.yml)
 
-[![SAST (OSV-Scanner-Container)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-osv-scanner-container.yml/badge.svg)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-osv-scanner-container.yml)
+[![SAST (OSV-Scanner-Container)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-osv-scanner-container.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-osv-scanner-container.yml)
 
-[![SAST (OWASP Dependency Check)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-owasp-dependency-check.yml/badge.svg)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-owasp-dependency-check.yml)
+[![SAST (OWASP Dependency Check)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-owasp-dependency-check.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-owasp-dependency-check.yml)
 
-[![SAST (Poutine)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-poutine.yml/badge.svg)](https://github.com/jlralph/desktop-tutorial/actions/workflows/sast-poutine.yml)
+[![SAST (Poutine)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-poutine.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-poutine.yml)
 
-[![Java CI with Maven](https://github.com/jlralph/desktop-tutorial/actions/workflows/maven.yml/badge.svg)](https://github.com/jlralph/desktop-tutorial/actions/workflows/maven.yml)
+[![DAST (Checkmarx ZAP)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/dast-zap.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/dast-zap.yml)
+
+[![DAST (Dastardly)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/dast-dastardly.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/dast-dastardly.yml)
