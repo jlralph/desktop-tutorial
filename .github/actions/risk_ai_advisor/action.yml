@@ -79,6 +79,15 @@ inputs:
     description: "Artifact retention period in days for the advisory report."
     required: false
     default: "90"
+  attest-report:
+    description: >-
+      Generate a signed build-provenance attestation for the advisory report
+      (Sigstore keyless signing via OIDC). The attestation binds the report's
+      digest to this workflow run and repository so its authenticity can be
+      verified later with `gh attestation verify`. Requires the calling workflow
+      to grant 'id-token: write' and 'attestations: write'.
+    required: false
+    default: "true"
 
 outputs:
   result:
@@ -108,6 +117,12 @@ outputs:
   report-path:
     description: "Path to the JSON advisory report."
     value: ${{ steps.advise.outputs.report-path }}
+  attestation-url:
+    description: "URL of the signed provenance attestation for the advisory report file."
+    value: ${{ steps.attest.outputs.attestation-url }}
+  bundle-attestation-url:
+    description: "URL of the signed provenance attestation for the uploaded artifact bundle."
+    value: ${{ steps.attest-bundle.outputs.attestation-url }}
 
 runs:
   using: "composite"
@@ -146,6 +161,13 @@ runs:
         KEV_CACHE_DIR: ${{ steps.kev-cache-meta.outputs.dir }}
       run: bash "${{ github.action_path }}/risk_ai_advisor.sh"
 
+    - name: Sign advisory report (provenance attestation)
+      id: attest
+      if: ${{ always() && inputs.attest-report == 'true' && steps.advise.outputs.report-path != '' }}
+      uses: actions/attest-build-provenance@v2
+      with:
+        subject-path: ${{ steps.advise.outputs.report-path }}
+
     - name: Upload advisory report artifact
       id: upload
       if: ${{ always() && inputs.upload-report == 'true' && steps.advise.outputs.report-path != '' }}
@@ -154,3 +176,11 @@ runs:
         name: risk-ai-advisor-report-${{ github.sha }}
         path: ${{ steps.advise.outputs.report-path }}
         retention-days: ${{ inputs.report-retention-days }}
+
+    - name: Sign uploaded artifact bundle (provenance attestation)
+      id: attest-bundle
+      if: ${{ always() && inputs.attest-report == 'true' && steps.upload.outputs.artifact-digest != '' }}
+      uses: actions/attest-build-provenance@v2
+      with:
+        subject-name: risk-ai-advisor-report-${{ github.sha }}.zip
+        subject-digest: sha256:${{ steps.upload.outputs.artifact-digest }}

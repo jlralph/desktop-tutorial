@@ -33,6 +33,9 @@ permissions:
   security-events: read
   # Call the GitHub Models inference API via the default GITHUB_TOKEN.
   models: read
+  # Required for keyless Sigstore attestation via actions/attest-build-provenance.
+  id-token: write
+  attestations: write
 
 jobs:
   risk-ai-advisor:

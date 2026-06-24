@@ -12,6 +12,10 @@ go/no-go recommendation, key risks, and recommended mitigations.
 Every run is tied to a commit SHA and a JSON advisory report is uploaded as an
 artifact named after that SHA, so the assessment can be evidenced later.
 
+When the calling workflow grants `id-token: write` and `attestations: write`, the
+action can also generate a signed provenance attestation for the advisory report
+and the uploaded artifact bundle.
+
 ## What it does
 
 1. Fetches open CodeQL alerts (`GET /repos/{owner}/{repo}/code-scanning/alerts`),
@@ -106,6 +110,7 @@ logs a warning and proceeds on whatever signal it can read rather than failing.
 | `max-alerts` | `75` | Upper bound on alerts of each type sent to the model. The action also auto-trims the payload (slimming fields and reducing this count) to stay within the model's input-token limit. Counts are always reported in full. |
 | `upload-report` | `true` | Upload the JSON report as an artifact. |
 | `report-retention-days` | `90` | Artifact retention period. |
+| `attest-report` | `true` | Generate signed provenance attestations for the report and uploaded artifact bundle. |
 
 ## Outputs
 
@@ -120,6 +125,20 @@ logs a warning and proceeds on whatever signal it can read rather than failing.
 | `kev-matched` | Distinct CVEs across open Dependabot alerts that are in the CISA KEV catalog. |
 | `audited-commit` | Commit SHA assessed. |
 | `report-path` | Path to the JSON report. |
+| `attestation-url` | URL of the signed provenance attestation for the advisory report file. |
+| `bundle-attestation-url` | URL of the signed provenance attestation for the uploaded artifact bundle. |
+
+## Report attestation
+
+When `attest-report` is `true`, the action generates signed build-provenance
+attestations for both the report file and the uploaded artifact bundle. This
+uses keyless Sigstore signing via the workflow's OIDC identity and allows later
+verification with `gh attestation verify`.
+
+This requires the calling workflow to grant:
+
+- `id-token: write`
+- `attestations: write`
 
 ## Example workflow
 
@@ -135,6 +154,8 @@ permissions:
   contents: read
   security-events: read   # read CodeQL code-scanning alerts
   models: read            # call the GitHub Models inference API
+  id-token: write         # mint OIDC token for keyless attestation
+  attestations: write     # persist signed provenance attestations
 
 jobs:
   risk-ai-advisor:
