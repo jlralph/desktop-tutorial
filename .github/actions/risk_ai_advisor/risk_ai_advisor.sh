@@ -299,6 +299,17 @@ else
     echo "Trimmed alert detail to fit the model input limit: sending ${CODEQL_SENT_N} CodeQL + ${DEPENDABOT_SENT_N} Dependabot alert(s) (${CODEQL_TRUNC} + ${DEPENDABOT_TRUNC} omitted)."
   fi
 
+  # Emit the exact prompt actually sent — with all input values resolved — to the
+  # workflow log so the inference is auditable. Wrapped in collapsible ::group::
+  # sections to keep the log readable. (Contains only public alert metadata and
+  # config inputs, no tokens/secrets.)
+  echo "::group::Risk AI Advisor — model request: system prompt"
+  echo "$SYSTEM_PROMPT"
+  echo "::endgroup::"
+  echo "::group::Risk AI Advisor — model request: user prompt (input values included)"
+  echo "$USER_PROMPT"
+  echo "::endgroup::"
+
   echo "Requesting risk assessment from GitHub Models (${MODEL})..."
   RESP_FILE=$(mktemp)
   HTTP_CODE=$(curl -sS -o "$RESP_FILE" -w '%{http_code}' \
@@ -315,6 +326,13 @@ else
     exit 1
   fi
 
+  # Log the full raw HTTP response body (choices, usage, etc.) so the complete
+  # inference is auditable from the run. Pretty-printed when valid JSON, otherwise
+  # emitted verbatim. No secrets are present in the response body.
+  echo "::group::Risk AI Advisor — model response: raw API body"
+  jq . "$RESP_FILE" 2>/dev/null || cat "$RESP_FILE"
+  echo "::endgroup::"
+
   CONTENT=$(jq -r '.choices[0].message.content // empty' < "$RESP_FILE")
   rm -f "$RESP_FILE"
   if [[ -z "$CONTENT" ]]; then
@@ -327,6 +345,11 @@ else
     exit 1
   fi
   MODEL_USED="$MODEL"
+
+  # Log the model's raw output (the verdict JSON) so it's auditable from the run.
+  echo "::group::Risk AI Advisor — model response: verdict JSON"
+  jq . <<< "$VERDICT"
+  echo "::endgroup::"
 fi
 
 # --- Extract verdict fields --------------------------------------------------
