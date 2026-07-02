@@ -1,4 +1,4 @@
-# security-scan-workflow-examples
+# security-workflow-examples
 
 A Spring Boot web application instrumented with automated CI, dependency graph submission, and a broad security scanning pipeline.
 
