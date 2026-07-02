@@ -37,13 +37,15 @@ inputs:
     default: "openai/gpt-4.1"
   deployment-environment:
     description: >-
-      Deployment environment the build targets, given to the model as context to
-      calibrate exposure and blast radius (e.g. "production - internet facing",
-      "staging", "internal-only network"). Internet-facing production increases
-      the weight of remotely exploitable findings; a low-exposure environment
-      lowers it. Defaults to the highest-exposure case.
+      Deployment environment and its exposure, given to the model as context to
+      calibrate reachability and blast radius (e.g. "production - public
+      internet-facing", "production - internal-only network", "staging -
+      internal-only network"). State whether the target is public/internet-facing
+      or internal-only: public-facing environments increase the weight of remotely
+      exploitable findings; internal-only lowers it. Defaults to the
+      highest-exposure case.
     required: false
-    default: "production - internet facing"
+    default: "production - public internet-facing"
   app-context:
     description: >-
       Free-text description of what is being released and its exposure, given

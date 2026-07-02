@@ -39,7 +39,7 @@ A Spring Boot web application instrumented with automated CI, dependency graph s
 
 ## Risk and compliance workflows
 
-- `.github/workflows/risk-ai-advisor.yml` — AI-weighted release-risk verdict over open CodeQL and Dependabot alerts (advisory by default). Supports `workflow_dispatch` inputs for the **deployment environment** (defaults to `production - internet facing`; calibrates exposure/blast radius), the `fail-on` blocking threshold, and the GitHub Models `model`.
+- `.github/workflows/risk-ai-advisor.yml` — AI-weighted release-risk verdict over open CodeQL and Dependabot alerts (advisory by default). Supports `workflow_dispatch` inputs for the **deployment environment and its exposure** (e.g. `production - public internet-facing` vs. `production - internal-only network`; defaults to the highest-exposure case and drives the release context so exposure weighting matches the target), the `fail-on` blocking threshold, and the GitHub Models `model`.
 - `.github/workflows/risk-sla-gate.yml`
 
 ## Custom Actions

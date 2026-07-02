@@ -16,7 +16,7 @@ set -euo pipefail
 : "${REPOSITORY:?REPOSITORY is required}"
 DEPENDABOT_TOKEN="${DEPENDABOT_TOKEN:-$GH_TOKEN}"
 MODEL="${MODEL:-openai/gpt-4.1}"
-DEPLOYMENT_ENVIRONMENT="${DEPLOYMENT_ENVIRONMENT:-production - internet facing}"
+DEPLOYMENT_ENVIRONMENT="${DEPLOYMENT_ENVIRONMENT:-production - public internet-facing}"
 APP_CONTEXT="${APP_CONTEXT:-A build being released to a public-facing, internet-exposed website.}"
 FAIL_ON="${FAIL_ON:-}"
 MAX_ALERTS="${MAX_ALERTS:-75}"

@@ -8,15 +8,16 @@ on:
   workflow_dispatch:
     inputs:
       deployment-environment:
-        description: "Deployment environment the build targets (calibrates exposure/blast radius)."
+        description: "Deployment environment + exposure the build targets (calibrates blast radius)."
         required: false
-        default: "production - internet facing"
+        default: "production - public internet-facing"
         type: choice
         options:
-          - "production - internet facing"
+          - "production - public internet-facing"
           - "production - internal-only network"
-          - "staging"
-          - "development"
+          - "staging - public internet-facing"
+          - "staging - internal-only network"
+          - "development - internal-only network"
       fail-on:
         description: "Risk levels that fail the job (e.g. 'critical,high'). Empty = advisory only."
         required: false
@@ -67,9 +68,15 @@ jobs:
           dependabot-token: ${{ secrets.DEPENDABOT_ALERTS_TOKEN || github.token }}
           model: ${{ github.event.inputs.model || 'openai/gpt-4.1' }}
           # Defaults to the highest-exposure case on non-dispatch triggers.
-          deployment-environment: ${{ github.event.inputs.deployment-environment || 'production - internet facing' }}
+          deployment-environment: ${{ github.event.inputs.deployment-environment || 'production - public internet-facing' }}
+          # Release context is derived from the selected environment so the two
+          # always agree (no "internet-exposed" context for an internal target).
           app-context: >-
-            A build being released to a public-facing, internet-exposed website.
+            A build being released to a "${{ github.event.inputs.deployment-environment || 'production - public internet-facing' }}"
+            deployment environment. Judge exploitability and blast radius by that
+            environment's exposure — treat "public internet-facing" as reachable
+            from the internet and "internal-only" as reachable only from within a
+            restricted internal network.
           # Advisory by default; dispatch with a value to gate the release.
           fail-on: ${{ github.event.inputs.fail-on || '' }}
           max-alerts: "75"
