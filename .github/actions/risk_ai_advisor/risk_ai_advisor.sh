@@ -16,6 +16,7 @@ set -euo pipefail
 : "${REPOSITORY:?REPOSITORY is required}"
 DEPENDABOT_TOKEN="${DEPENDABOT_TOKEN:-$GH_TOKEN}"
 MODEL="${MODEL:-openai/gpt-4.1}"
+DEPLOYMENT_ENVIRONMENT="${DEPLOYMENT_ENVIRONMENT:-production - internet facing}"
 APP_CONTEXT="${APP_CONTEXT:-A build being released to a public-facing, internet-exposed website.}"
 FAIL_ON="${FAIL_ON:-}"
 MAX_ALERTS="${MAX_ALERTS:-75}"
@@ -248,6 +249,7 @@ else
 
     USER_PROMPT=$(jq -nr \
       --arg ctx "$APP_CONTEXT" \
+      --arg env "$DEPLOYMENT_ENVIRONMENT" \
       --arg repo "$REPOSITORY" \
       --arg sha "${GITHUB_SHA:-n/a}" \
       --argjson codeql "$CODEQL_SENT" \
@@ -259,6 +261,7 @@ else
       --argjson kev_size "$KEV_CATALOG_SIZE" \
       --argjson kev_matched "$KEV_MATCHED" \
       '"Release context: \($ctx)\n" +
+       "Deployment environment: \($env)\n" +
        "Repository: \($repo)\nCommit: \($sha)\n\n" +
        "Open CodeQL alerts: \($codeql_total) (showing \($codeql | length), \($codeql_trunc) omitted for brevity).\n" +
        "Open Dependabot alerts: \($dependabot_total) (showing \($dependabot | length), \($dependabot_trunc) omitted for brevity).\n" +
@@ -368,6 +371,7 @@ jq -n \
   --arg assessed_at "$NOW_ISO" \
   --arg model "$MODEL_USED" \
   --arg app_context "$APP_CONTEXT" \
+  --arg deployment_environment "$DEPLOYMENT_ENVIRONMENT" \
   --arg result "$RESULT" \
   --argjson fail_on "$FAIL_ON_JSON" \
   --argjson codeql_open "$CODEQL_OPEN" \
@@ -393,7 +397,8 @@ jq -n \
       triggered_by: $actor,
       assessed_at: $assessed_at,
       model: $model,
-      app_context: $app_context
+      app_context: $app_context,
+      deployment_environment: $deployment_environment
     },
     policy: {
       result: $result,
@@ -434,6 +439,7 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   echo "|---|---|"
   echo "| Repository | \`${REPOSITORY}\` |"
   echo "| **Audited commit** | \`${GITHUB_SHA:-n/a}\` |"
+  echo "| Deployment environment | ${DEPLOYMENT_ENVIRONMENT} |"
   echo "| Assessed at | ${NOW_ISO} |"
   echo "| Model | \`${MODEL_USED}\` |"
   codeql_note=""; [[ "$CODEQL_READABLE" == "fail" ]] && codeql_note=" ⚠️ not readable"

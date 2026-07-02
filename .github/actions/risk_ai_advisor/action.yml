@@ -35,6 +35,15 @@ inputs:
       (e.g. 'openai/gpt-4.1').
     required: false
     default: "openai/gpt-4.1"
+  deployment-environment:
+    description: >-
+      Deployment environment the build targets, given to the model as context to
+      calibrate exposure and blast radius (e.g. "production - internet facing",
+      "staging", "internal-only network"). Internet-facing production increases
+      the weight of remotely exploitable findings; a low-exposure environment
+      lowers it. Defaults to the highest-exposure case.
+    required: false
+    default: "production - internet facing"
   app-context:
     description: >-
       Free-text description of what is being released and its exposure, given
@@ -154,6 +163,7 @@ runs:
         MODELS_TOKEN: ${{ inputs.github-token }}
         REPOSITORY: ${{ inputs.repository }}
         MODEL: ${{ inputs.model }}
+        DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment-environment }}
         APP_CONTEXT: ${{ inputs.app-context }}
         FAIL_ON: ${{ inputs.fail-on }}
         MAX_ALERTS: ${{ inputs.max-alerts }}
