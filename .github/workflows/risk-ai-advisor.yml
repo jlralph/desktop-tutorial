@@ -7,6 +7,16 @@ name: "Risk AI Advisor"
 on:
   workflow_dispatch:
     inputs:
+      deployment-environment:
+        description: "Deployment environment the build targets (calibrates exposure/blast radius)."
+        required: false
+        default: "production - internet facing"
+        type: choice
+        options:
+          - "production - internet facing"
+          - "production - internal-only network"
+          - "staging"
+          - "development"
       fail-on:
         description: "Risk levels that fail the job (e.g. 'critical,high'). Empty = advisory only."
         required: false
@@ -56,6 +66,8 @@ jobs:
           # secret is absent the advisor proceeds on CodeQL alerts alone.
           dependabot-token: ${{ secrets.DEPENDABOT_ALERTS_TOKEN || github.token }}
           model: ${{ github.event.inputs.model || 'openai/gpt-4.1' }}
+          # Defaults to the highest-exposure case on non-dispatch triggers.
+          deployment-environment: ${{ github.event.inputs.deployment-environment || 'production - internet facing' }}
           app-context: >-
             A build being released to a public-facing, internet-exposed website.
           # Advisory by default; dispatch with a value to gate the release.
