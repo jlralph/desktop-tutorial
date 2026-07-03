@@ -57,22 +57,26 @@ A Spring Boot web application instrumented with automated CI, dependency graph s
 
 ## Badges
 
-[![Java CI with Maven](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/maven.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/maven.yml)
+[![Java CI with Maven](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/maven.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/maven.yml)
 
-[![Dependency Graph](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/dependency-graph.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/dependency-graph.yml)
+[![Update Dependency Graph](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/dependency-graph.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/dependency-graph.yml)
 
-[![SAST (CodeQL)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-codeql.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-codeql.yml)
+[![SAST (CodeQL)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-codeql.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-codeql.yml)
 
-[![SAST (Codacy)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-codacy.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-codacy.yml)
+[![SAST (Codacy)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-codacy.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-codacy.yml)
 
-[![SAST (OSV-Scanner)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-osv-scanner.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-osv-scanner.yml)
+[![SAST (OSV-Scanner)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-osv-scanner.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-osv-scanner.yml)
 
-[![SAST (OSV-Scanner-Container)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-osv-scanner-container.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-osv-scanner-container.yml)
+[![SAST (OSV-Scanner-Container)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-osv-scanner-container.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-osv-scanner-container.yml)
 
-[![SAST (OWASP Dependency Check)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-owasp-dependency-check.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-owasp-dependency-check.yml)
+[![SAST (OWASP Dependency Check)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-owasp-dependency-check.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-owasp-dependency-check.yml)
 
-[![SAST (Poutine)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-poutine.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/sast-poutine.yml)
+[![SAST (Poutine)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-poutine.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-poutine.yml)
 
-[![DAST (Checkmarx ZAP)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/dast-zap.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/dast-zap.yml)
+[![DAST (Checkmarx ZAP)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/dast-zap.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/dast-zap.yml)
 
-[![DAST (Dastardly)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/dast-dastardly.yml/badge.svg)](https://github.com/jlralph/security-scan-workflow-examples/actions/workflows/dast-dastardly.yml)
+[![DAST (Dastardly)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/dast-dastardly.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/dast-dastardly.yml)
+
+[![Risk AI Advisor](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/risk-ai-advisor.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/risk-ai-advisor.yml)
+
+[![Risk SLA Gate](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/risk-sla-gate.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/risk-sla-gate.yml)
