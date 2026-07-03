@@ -519,6 +519,41 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   if [[ "$CODEQL_TRUNC" -gt 0 || "$DEPENDABOT_TRUNC" -gt 0 ]]; then
     echo ""
     echo "_Note: ${CODEQL_TRUNC} CodeQL and ${DEPENDABOT_TRUNC} Dependabot alert(s) were omitted from the model prompt to stay within the \`max-alerts\` cap (${MAX_ALERTS}) and the model's input-token limit; counts above are complete._"
+    echo ""
+    # List the alerts that the model did NOT see so a reviewer can still eyeball
+    # them. The alert arrays are pre-sorted KEV-/severity-first, so the omitted
+    # set is exactly the tail beyond what was sent ($CODEQL_SENT_N / $DEPENDABOT_SENT_N)
+    # — i.e. the lowest-priority findings. Capped to keep the summary bounded.
+    OMIT_ROW_CAP=100
+    echo "<details><summary>🔎 Omitted alerts not sent to the model (${CODEQL_TRUNC} CodeQL, ${DEPENDABOT_TRUNC} Dependabot)</summary>"
+    echo ""
+    if [[ "$DEPENDABOT_TRUNC" -gt 0 ]]; then
+      echo "**Dependabot — ${DEPENDABOT_TRUNC} omitted** (lowest-priority; sorted after the sent set)"
+      echo ""
+      echo "| Severity | Package | Advisory | Known-exploited | Fix available | Alert |"
+      echo "|---|---|---|---|---|---|"
+      jq -r --argjson n "$DEPENDABOT_SENT_N" --argjson cap "$OMIT_ROW_CAP" \
+        '.[$n:][0:$cap][] | "| \(.severity) | \(.package) (\(.ecosystem)) | \(.advisory) | \(if .known_exploited then "🚨 yes" else "no" end) | \(if .first_patched_version == "none" then "none" else .first_patched_version end) | [#\(.number)](\(.url)) |"' <<< "$DEPENDABOT"
+      if [[ "$DEPENDABOT_TRUNC" -gt "$OMIT_ROW_CAP" ]]; then
+        echo ""
+        echo "_…and $((DEPENDABOT_TRUNC - OMIT_ROW_CAP)) more Dependabot alert(s) not listed (see the JSON advisory report for the complete set)._"
+      fi
+      echo ""
+    fi
+    if [[ "$CODEQL_TRUNC" -gt 0 ]]; then
+      echo "**CodeQL — ${CODEQL_TRUNC} omitted** (lowest-priority; sorted after the sent set)"
+      echo ""
+      echo "| Severity | Rule | File | Alert |"
+      echo "|---|---|---|---|"
+      jq -r --argjson n "$CODEQL_SENT_N" --argjson cap "$OMIT_ROW_CAP" \
+        '.[$n:][0:$cap][] | "| \(.severity) | \(.name // .rule_id) | `\(.file)` | [#\(.number)](\(.url)) |"' <<< "$CODEQL"
+      if [[ "$CODEQL_TRUNC" -gt "$OMIT_ROW_CAP" ]]; then
+        echo ""
+        echo "_…and $((CODEQL_TRUNC - OMIT_ROW_CAP)) more CodeQL alert(s) not listed (see the JSON advisory report for the complete set)._"
+      fi
+      echo ""
+    fi
+    echo "</details>"
   fi
 } >> "$GITHUB_STEP_SUMMARY"
 fi
