@@ -52,8 +52,19 @@ NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 EVALUATED=$(jq -c \
   --argjson now "$NOW_EPOCH" \
-  --argjson slas "$SLAS" '
+  --argjson slas "$SLAS" \
+  --arg ws "${GITHUB_WORKSPACE:-}" '
   def rank: {"critical": 0, "high": 1, "medium": 2, "low": 3};
+  # Normalize a manifest path to a repo-relative form so the same file reported
+  # with different prefixes (an absolute runner-workspace path vs a plain
+  # "pom.xml") collapses to one value. Without this, one vulnerability in one
+  # file can appear as two rows when Dependabot surfaces it as separate alerts.
+  def norm_manifest:
+    ( (. // "")
+      | ltrimstr("/")
+      | (if ($ws | length) > 0 then ltrimstr(($ws | ltrimstr("/")) + "/") else . end)
+      | sub("^home/runner/work/[^/]+/[^/]+/"; "")
+      | ltrimstr("./") );
   [ .[]
     | ((.security_vulnerability.severity // .security_advisory.severity // "low") | ascii_downcase) as $sev
     | ((.security_advisory.published_at // .created_at)) as $pub_iso
@@ -64,7 +75,7 @@ EVALUATED=$(jq -c \
         alert_number: .number,
         package: .dependency.package.name,
         ecosystem: .dependency.package.ecosystem,
-        manifest_path: .dependency.manifest_path,
+        manifest_path: (.dependency.manifest_path | norm_manifest),
         cve_id: (.security_advisory.cve_id // .security_advisory.ghsa_id // "N/A"),
         ghsa_id: .security_advisory.ghsa_id,
         severity: $sev,
@@ -77,6 +88,12 @@ EVALUATED=$(jq -c \
         alert_url: .html_url
       }
   ]
+  # Collapse duplicates: the same package + vulnerability in the same (normalized)
+  # manifest is one finding even if it surfaces as multiple Dependabot alerts.
+  # Keep the lowest alert number for a stable, deterministic choice. This dedupe
+  # flows into the counts, the JSON report, and the summary so they all agree.
+  | group_by([.package, .ecosystem, .cve_id, .manifest_path])
+  | map(min_by(.alert_number))
   | sort_by([(rank[.severity] // 4), -(.days_over_sla)])' <<< "$ALERTS")
 
 VIOLATIONS=$(jq -c '[ .[] | select(.in_violation) ]' <<< "$EVALUATED")
