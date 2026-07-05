@@ -42,7 +42,7 @@ inputs:
     required: false
     default: "60"
   sla-low:
-    description: "Remediations SLA in days for low severity."
+    description: "Remediation SLA in days for low severity."
     required: false
     default: "90"
   upload-report:
