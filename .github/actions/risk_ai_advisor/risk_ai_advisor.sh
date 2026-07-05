@@ -125,6 +125,17 @@ CODEQL=$(jq -c --argjson rank "$SEV_RANK" '
 # Dependabot alerts are enriched with CISA KEV data: any whose CVE is in the
 # catalog is flagged known_exploited and carries the KEV record. Known-exploited
 # alerts sort first so they survive max-alerts truncation.
+#
+# After sorting, DUPLICATE alerts for the same vulnerability are collapsed to a
+# single representative: the same CVE can surface as several open alerts (e.g. the
+# same package reported under two manifest-path spellings), which would otherwise
+# send the model the same finding multiple times — wasting the token budget and
+# over-weighting it. Dedup is keyed on the CVE, falling back to the advisory
+# (GHSA) id when there is no CVE, and to the alert number when neither exists so
+# genuinely distinct advisories are never merged. The array is deduped in place,
+# so the counts, the summary, and the model list all see each vulnerability once.
+# Because the array is pre-sorted KEV-/severity-first, the kept representative is
+# the highest-priority instance of each vulnerability.
 DEPENDABOT=$(jq -c --argjson rank "$SEV_RANK" --slurpfile kevwrap "$KEV_FILE" '
   ($kevwrap[0] // {}) as $kev |
   [ .[] | (.security_advisory.cve_id // "") as $cve | {
@@ -141,13 +152,25 @@ DEPENDABOT=$(jq -c --argjson rank "$SEV_RANK" --slurpfile kevwrap "$KEV_FILE" '
       kev: (if $cve != "" then $kev[$cve] else null end),
       url: .html_url
     } ]
-  | sort_by([(.known_exploited | not), ($rank[.severity] // 5)])' <<< "$DEPENDABOT_RAW")
+  | sort_by([(.known_exploited | not), ($rank[.severity] // 5)])
+  | reduce .[] as $x ({seen: {}, out: []};
+      ( if $x.cve != "" then "cve:" + $x.cve
+        elif $x.advisory != "N/A" then "adv:" + $x.advisory
+        else "num:" + ($x.number | tostring) end ) as $k
+      | if .seen[$k] then . else (.seen[$k] = true) | (.out += [$x]) end)
+  | .out' <<< "$DEPENDABOT_RAW")
 # Keep the file when it lives in the cache dir so actions/cache can persist it.
 [[ -z "${KEV_CACHE_DIR:-}" ]] && rm -f "$KEV_FILE"
 
 CODEQL_OPEN=$(jq 'length' <<< "$CODEQL")
 DEPENDABOT_OPEN=$(jq 'length' <<< "$DEPENDABOT")
 TOTAL_OPEN=$(( CODEQL_OPEN + DEPENDABOT_OPEN ))
+
+# How many duplicate Dependabot alerts were collapsed above (fetched minus the
+# distinct set now in $DEPENDABOT). Surfaced in the log, summary, and report.
+DEPENDABOT_FETCHED=$(jq 'length' <<< "$DEPENDABOT_RAW")
+DEPENDABOT_DUPES=$(( DEPENDABOT_FETCHED > DEPENDABOT_OPEN ? DEPENDABOT_FETCHED - DEPENDABOT_OPEN : 0 ))
+[[ "$DEPENDABOT_DUPES" -gt 0 ]] && echo "Collapsed ${DEPENDABOT_DUPES} duplicate Dependabot alert(s) sharing a CVE/advisory before assessment; ${DEPENDABOT_OPEN} distinct vulnerabilities remain."
 
 # How many distinct CVEs across the open Dependabot alerts are in the CISA KEV
 # catalog (actively exploited). Counted distinct-by-CVE so it matches the deduped
@@ -411,6 +434,8 @@ jq -n \
   --argjson fail_on "$FAIL_ON_JSON" \
   --argjson codeql_open "$CODEQL_OPEN" \
   --argjson dependabot_open "$DEPENDABOT_OPEN" \
+  --argjson dependabot_fetched "$DEPENDABOT_FETCHED" \
+  --argjson dependabot_duplicates_removed "$DEPENDABOT_DUPES" \
   --argjson codeql_truncated "$CODEQL_TRUNC" \
   --argjson dependabot_truncated "$DEPENDABOT_TRUNC" \
   --argjson kev_catalog_size "$KEV_CATALOG_SIZE" \
@@ -443,6 +468,8 @@ jq -n \
     inputs: {
       codeql_open: $codeql_open,
       dependabot_open: $dependabot_open,
+      dependabot_fetched: $dependabot_fetched,
+      dependabot_duplicates_removed: $dependabot_duplicates_removed,
       codeql_readable: ($codeql_readable == "ok"),
       dependabot_readable: ($dependabot_readable == "ok"),
       codeql_truncated: $codeql_truncated,
@@ -481,8 +508,9 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   echo "| Model | \`${MODEL_USED}\` |"
   codeql_note=""; [[ "$CODEQL_READABLE" == "fail" ]] && codeql_note=" ⚠️ not readable"
   dependabot_note=""; [[ "$DEPENDABOT_READABLE" == "fail" ]] && dependabot_note=" ⚠️ not readable"
+  dependabot_dedup_note=""; [[ "$DEPENDABOT_DUPES" -gt 0 ]] && dependabot_dedup_note=" (deduplicated from ${DEPENDABOT_FETCHED}; ${DEPENDABOT_DUPES} duplicate CVE/advisory alert(s) merged)"
   echo "| Open CodeQL alerts | ${CODEQL_OPEN}${codeql_note} |"
-  echo "| Open Dependabot alerts | ${DEPENDABOT_OPEN}${dependabot_note} |"
+  echo "| Open Dependabot alerts | ${DEPENDABOT_OPEN}${dependabot_note}${dependabot_dedup_note} |"
   echo "| 🚨 Known-exploited (CISA KEV) | ${KEV_MATCHED} |"
   echo ""
   if [[ "$DEPENDABOT_READABLE" == "fail" ]]; then
