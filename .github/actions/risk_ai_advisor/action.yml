@@ -54,6 +54,17 @@ inputs:
       sharper verdict.
     required: false
     default: "A build being released to a public-facing, internet-exposed website."
+  mitigations:
+    description: >-
+      Compensating controls already deployed in front of the build (e.g. a WAF,
+      load balancer, CDN with DDoS protection, network isolation, rate limiting),
+      given to the model so it can weigh them when judging exploitability and
+      blast radius. Provide a human-readable list — the calling workflow builds
+      this from the manual-run checkboxes. Empty (default) means none specified.
+      Controls are treated as risk-reducing but not a guarantee, so critical or
+      known-exploited findings are never dismissed on their basis alone.
+    required: false
+    default: ""
   fail-on:
     description: >-
       AI risk level at or above which the job fails, treated as a severity
@@ -167,6 +178,7 @@ runs:
         MODEL: ${{ inputs.model }}
         DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment-environment }}
         APP_CONTEXT: ${{ inputs.app-context }}
+        MITIGATIONS: ${{ inputs.mitigations }}
         FAIL_ON: ${{ inputs.fail-on }}
         MAX_ALERTS: ${{ inputs.max-alerts }}
         CODE_SCANNING_TOOL: ${{ inputs.code-scanning-tool }}

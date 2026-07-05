@@ -66,6 +66,33 @@ The catalog is cached across runs via `actions/cache`, keyed per UTC day, so onl
 the first run each day downloads it. A network or parse failure degrades to an
 empty catalog and a warning — the advisor still runs on the rest of the signal.
 
+## Compensating controls
+
+You can tell the advisor which mitigations are already deployed in front of the
+build so it can factor them into exploitability and blast-radius reasoning. Pass
+a human-readable list via the `mitigations` input, e.g.:
+
+```yaml
+mitigations: "Web Application Firewall (WAF) fronting the application; CDN with DDoS protection"
+```
+
+The example workflow in this repo exposes these as **checkboxes on a manual
+(`workflow_dispatch`) run** — none selected by default — and assembles the chosen
+ones into this input:
+
+- Web Application Firewall (WAF)
+- Load balancer / reverse proxy
+- CDN with DDoS protection
+- Network isolation / restricted ingress
+- Rate limiting / request throttling
+- plus a free-text field for any others (auth required, mTLS, IDS/IPS, RASP, …)
+
+Controls are treated as **risk-reducing, not risk-eliminating**: the model is
+instructed that they can be misconfigured, bypassed, or fail to cover a given
+finding, so a critical, KEV-listed, or clearly reachable vulnerability is never
+dismissed on their basis alone. The controls considered are shown in the job
+summary and recorded in the JSON advisory report (`audit.mitigations`).
+
 ## Advisory vs. blocking
 
 By default the action is **advisory** — it always reports a verdict but never
@@ -105,6 +132,7 @@ logs a warning and proceeds on whatever signal it can read rather than failing.
 | `repository` | `${{ github.repository }}` | Repo to assess, `owner/repo`. |
 | `model` | `openai/gpt-4.1` | GitHub Models model, `{publisher}/{model}`. |
 | `app-context` | _(generic public-site text)_ | Description of what's being released and its exposure — sharper context, sharper verdict. |
+| `mitigations` | `""` | Compensating controls already in front of the build (WAF, load balancer, CDN/DDoS, network isolation, rate limiting, …), as a human-readable list. The model weighs them when judging exploitability and blast radius. Empty = none specified. See [Compensating controls](#compensating-controls). |
 | `fail-on` | `""` | Severity threshold that fails the job — fails at this level or above (e.g. `high` → high + critical). Empty = advisory only. |
 | `code-scanning-tool` | `CodeQL` | Code-scanning tool whose alerts to assess (`tool_name` filter). Excludes other SARIF scanners by default; set to `all` (or empty) to include every tool. |
 | `max-alerts` | `75` | Upper bound on alerts of each type sent to the model. The action also auto-trims the payload (slimming fields and reducing this count) to stay within the model's input-token limit. Counts are always reported in full. |

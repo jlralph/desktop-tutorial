@@ -18,6 +18,42 @@ on:
           - "staging - public internet-facing"
           - "staging - internal-only network"
           - "development - internal-only network"
+      # Compensating controls already deployed in front of the build. None are
+      # selected by default; tick one or more on a manual run so the AI weighs
+      # them when judging exploitability and blast radius. They lower practical
+      # risk but are not treated as a guarantee (controls can be misconfigured or
+      # bypassed), so a critical or known-exploited finding is never dismissed on
+      # their basis alone.
+      mitigation-waf:
+        description: "Mitigation in place: Web Application Firewall (WAF) fronting the app."
+        required: false
+        default: false
+        type: boolean
+      mitigation-load-balancer:
+        description: "Mitigation in place: load balancer / reverse proxy fronting the app."
+        required: false
+        default: false
+        type: boolean
+      mitigation-cdn-ddos:
+        description: "Mitigation in place: CDN with DDoS protection."
+        required: false
+        default: false
+        type: boolean
+      mitigation-network-isolation:
+        description: "Mitigation in place: network isolation / restricted ingress (not directly internet-reachable except via a controlled entry point)."
+        required: false
+        default: false
+        type: boolean
+      mitigation-rate-limiting:
+        description: "Mitigation in place: rate limiting / request throttling on public endpoints."
+        required: false
+        default: false
+        type: boolean
+      additional-mitigations:
+        description: "Other compensating controls in place (free text, comma-separated), e.g. authentication required, mTLS, IDS/IPS, RASP, secrets rotation."
+        required: false
+        default: ""
+        type: string
       fail-on:
         description: "Risk levels that fail the job (e.g. 'critical,high'). Empty = advisory only."
         required: false
@@ -56,6 +92,40 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      # Turn the per-mitigation checkboxes (only present on a workflow_dispatch
+      # run) into a single human-readable list for the AI. Nothing ticked -> empty
+      # output, which the advisor reads as "no compensating controls specified".
+      - name: Compose selected mitigations
+        id: mitigations
+        shell: bash
+        env:
+          M_WAF: ${{ github.event.inputs.mitigation-waf }}
+          M_LOAD_BALANCER: ${{ github.event.inputs.mitigation-load-balancer }}
+          M_CDN_DDOS: ${{ github.event.inputs.mitigation-cdn-ddos }}
+          M_NETWORK_ISOLATION: ${{ github.event.inputs.mitigation-network-isolation }}
+          M_RATE_LIMITING: ${{ github.event.inputs.mitigation-rate-limiting }}
+          M_ADDITIONAL: ${{ github.event.inputs.additional-mitigations }}
+        run: |
+          items=()
+          [[ "$M_WAF" == "true" ]] && items+=("Web Application Firewall (WAF) fronting the application")
+          [[ "$M_LOAD_BALANCER" == "true" ]] && items+=("Load balancer / reverse proxy fronting the application")
+          [[ "$M_CDN_DDOS" == "true" ]] && items+=("CDN with DDoS protection")
+          [[ "$M_NETWORK_ISOLATION" == "true" ]] && items+=("Network isolation / restricted ingress (not directly reachable from the public internet except via a controlled entry point)")
+          [[ "$M_RATE_LIMITING" == "true" ]] && items+=("Rate limiting / request throttling on public endpoints")
+          extra="$(printf '%s' "${M_ADDITIONAL:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          [[ -n "$extra" ]] && items+=("$extra")
+          list=""
+          for i in "${items[@]}"; do
+            [[ -n "$list" ]] && list+="; "
+            list+="$i"
+          done
+          {
+            echo "list<<__MITIG_EOF__"
+            echo "$list"
+            echo "__MITIG_EOF__"
+          } >> "$GITHUB_OUTPUT"
+          echo "Selected mitigations: ${list:-<none>}"
+
       - name: Assess release risk with AI
         id: advisor
         uses: ./.github/actions/risk_ai_advisor
@@ -77,6 +147,9 @@ jobs:
             environment's exposure — treat "public internet-facing" as reachable
             from the internet and "internal-only" as reachable only from within a
             restricted internal network.
+          # Compensating controls selected for this run (empty on non-dispatch
+          # triggers); the AI weighs them in its exploitability/blast-radius call.
+          mitigations: ${{ steps.mitigations.outputs.list }}
           # Advisory by default; dispatch with a value to gate the release.
           fail-on: ${{ github.event.inputs.fail-on || '' }}
           max-alerts: "75"

@@ -18,6 +18,8 @@ DEPENDABOT_TOKEN="${DEPENDABOT_TOKEN:-$GH_TOKEN}"
 MODEL="${MODEL:-openai/gpt-4.1}"
 DEPLOYMENT_ENVIRONMENT="${DEPLOYMENT_ENVIRONMENT:-production - public internet-facing}"
 APP_CONTEXT="${APP_CONTEXT:-A build being released to a public-facing, internet-exposed website.}"
+# Compensating controls (WAF, load balancer, etc.) selected for this run, if any.
+MITIGATIONS="${MITIGATIONS:-}"
 FAIL_ON="${FAIL_ON:-}"
 MAX_ALERTS="${MAX_ALERTS:-75}"
 # Which code-scanning tool's alerts to assess. Defaults to CodeQL so alerts from
@@ -165,6 +167,13 @@ DEPENDABOT_TRUNC=0
 
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
+# Compensating controls text fed to the model and recorded for audit. An empty
+# (or whitespace-only) selection reads as "None specified.".
+MITIGATIONS_TEXT="$MITIGATIONS"
+[[ -z "${MITIGATIONS_TEXT//[[:space:]]/}" ]] && MITIGATIONS_TEXT="None specified."
+# Single-line, pipe-escaped form so it renders cleanly in the Markdown summary cell.
+MITIGATIONS_CELL=$(printf '%s' "$MITIGATIONS_TEXT" | tr '\n' ' ' | sed 's/|/\\|/g')
+
 # --- Decide whether we need the model at all --------------------------------
 # With zero open alerts there is nothing for the model to weigh; emit a
 # deterministic clean verdict and skip the inference call.
@@ -208,7 +217,7 @@ else
     required: ["risk_level","recommendation","confidence","summary","key_risks","recommended_mitigations"]
   }')
 
-  SYSTEM_PROMPT="You are a principal application security engineer acting as a release gatekeeper. You assess whether a software build is safe to release to its target deployment environment by reasoning over open static-analysis (CodeQL) findings and open dependency (Dependabot) vulnerabilities. The target deployment environment is: \"${DEPLOYMENT_ENVIRONMENT}\" (additional detail may appear in the user message). Calibrate your assessment to that environment's exposure and blast radius rather than assuming it is internet-facing: weigh exploitability given who can actually reach the affected code/dependency (the public internet for an internet-facing production site, versus a restricted internal network or an isolated pre-production environment), the exposure of the affected component, severity, and whether fixes are available. A remotely, internet-exploitable vulnerability is far more urgent for an internet-facing production deployment than for an internal-only or non-production one, so adjust the risk level and recommendation accordingly — while never dismissing issues that remain reachable in the stated environment or that would gate promotion to production. Dependabot findings may be annotated with \"known_exploited\": true and a \"kev\" object: these CVEs appear in the CISA Known Exploited Vulnerabilities (KEV) catalog, meaning active in-the-wild exploitation is confirmed. Treat any KEV-listed vulnerability as a strong escalating factor — it should push the risk level and recommendation decisively toward blocking, most sharply for internet-facing environments, when knownRansomwareCampaignUse is 'Known', or when a fix is available. KEV status is an amplifier, not a filter: it raises the priority of matching findings but does NOT mean other findings are unimportant. You must still consider and surface non-KEV vulnerabilities that a security reviewer would care about — e.g. critical/high-severity issues, findings reachable in the target environment, and vulnerabilities with available fixes — even when KEV matches exist. Be decisive and concise. Reserve 'critical' for issues that are likely exploitable in the target environment with serious impact (for internet-facing deployments, remotely exploitable and KEV-listed vulnerabilities are prime candidates). Output only what the provided JSON schema allows."
+  SYSTEM_PROMPT="You are a principal application security engineer acting as a release gatekeeper. You assess whether a software build is safe to release to its target deployment environment by reasoning over open static-analysis (CodeQL) findings and open dependency (Dependabot) vulnerabilities. The target deployment environment is: \"${DEPLOYMENT_ENVIRONMENT}\" (additional detail may appear in the user message). Calibrate your assessment to that environment's exposure and blast radius rather than assuming it is internet-facing: weigh exploitability given who can actually reach the affected code/dependency (the public internet for an internet-facing production site, versus a restricted internal network or an isolated pre-production environment), the exposure of the affected component, severity, and whether fixes are available. A remotely, internet-exploitable vulnerability is far more urgent for an internet-facing production deployment than for an internal-only or non-production one, so adjust the risk level and recommendation accordingly — while never dismissing issues that remain reachable in the stated environment or that would gate promotion to production. Dependabot findings may be annotated with \"known_exploited\": true and a \"kev\" object: these CVEs appear in the CISA Known Exploited Vulnerabilities (KEV) catalog, meaning active in-the-wild exploitation is confirmed. Treat any KEV-listed vulnerability as a strong escalating factor — it should push the risk level and recommendation decisively toward blocking, most sharply for internet-facing environments, when knownRansomwareCampaignUse is 'Known', or when a fix is available. KEV status is an amplifier, not a filter: it raises the priority of matching findings but does NOT mean other findings are unimportant. You must still consider and surface non-KEV vulnerabilities that a security reviewer would care about — e.g. critical/high-severity issues, findings reachable in the target environment, and vulnerabilities with available fixes — even when KEV matches exist. Be decisive and concise. Reserve 'critical' for issues that are likely exploitable in the target environment with serious impact (for internet-facing deployments, remotely exploitable and KEV-listed vulnerabilities are prime candidates). The user message may list compensating controls already deployed in front of the application (for example a WAF, load balancer, CDN with DDoS protection, network isolation, or rate limiting). When controls are listed, factor them into your exploitability and blast-radius reasoning — they can lower the practical risk of a finding (e.g. network isolation limits who can reach it, a WAF can impede some injection or exploitation attempts, rate limiting blunts brute-force and some DoS) — but treat them as risk-reducing, NOT risk-eliminating: controls can be misconfigured, bypassed, or simply not cover a given finding, so never downgrade a critical, KEV-listed, or clearly reachable vulnerability to negligible solely because a mitigation is present. Note in why_it_matters when a listed control materially changed your assessment. Output only what the provided JSON schema allows."
 
   # --- Size the request to the model's input-token limit ------------------
   # GitHub Models caps the request body (e.g. gpt-4.1 allows ~8000 input
@@ -260,8 +269,10 @@ else
       --argjson dependabot_trunc "$DEPENDABOT_TRUNC" \
       --argjson kev_size "$KEV_CATALOG_SIZE" \
       --argjson kev_matched "$KEV_MATCHED" \
+      --arg mitig "$MITIGATIONS_TEXT" \
       '"Release context: \($ctx)\n" +
        "Deployment environment: \($env)\n" +
+       "Compensating controls already in place: \($mitig)\n" +
        "Repository: \($repo)\nCommit: \($sha)\n\n" +
        "Open CodeQL alerts: \($codeql_total) (showing \($codeql | length), \($codeql_trunc) omitted for brevity).\n" +
        "Open Dependabot alerts: \($dependabot_total) (showing \($dependabot | length), \($dependabot_trunc) omitted for brevity).\n" +
@@ -395,6 +406,7 @@ jq -n \
   --arg model "$MODEL_USED" \
   --arg app_context "$APP_CONTEXT" \
   --arg deployment_environment "$DEPLOYMENT_ENVIRONMENT" \
+  --arg mitigations "$MITIGATIONS_TEXT" \
   --arg result "$RESULT" \
   --argjson fail_on "$FAIL_ON_JSON" \
   --argjson codeql_open "$CODEQL_OPEN" \
@@ -421,7 +433,8 @@ jq -n \
       assessed_at: $assessed_at,
       model: $model,
       app_context: $app_context,
-      deployment_environment: $deployment_environment
+      deployment_environment: $deployment_environment,
+      mitigations: $mitigations
     },
     policy: {
       result: $result,
@@ -463,6 +476,7 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   echo "| Repository | \`${REPOSITORY}\` |"
   echo "| **Audited commit** | \`${GITHUB_SHA:-n/a}\` |"
   echo "| Deployment environment | ${DEPLOYMENT_ENVIRONMENT} |"
+  echo "| Compensating controls | ${MITIGATIONS_CELL} |"
   echo "| Assessed at | ${NOW_ISO} |"
   echo "| Model | \`${MODEL_USED}\` |"
   codeql_note=""; [[ "$CODEQL_READABLE" == "fail" ]] && codeql_note=" ⚠️ not readable"
