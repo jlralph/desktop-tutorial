@@ -8,7 +8,7 @@ A Spring Boot web application instrumented with automated CI, dependency graph s
 - **Spring Boot 4.0.6**
 - **Maven**
 - Spring Web, Spring Boot Actuator, Spring Boot Test
-- Includes an intentionally vulnerable dependency: `org.apache.logging.log4j:log4j-core:2.14.1` for security scan demonstration
+- Includes an intentionally vulnerable dependency: `org.apache.logging.log4j:log4j-core:2.14.1` (Log4Shell, CVE-2021-44228, listed in the CISA KEV catalog), pinned to override Spring Boot's managed patched version so it exercises the security-scan and Risk AI Advisor KEV paths
 
 ## Application snapshot
 
@@ -39,8 +39,12 @@ A Spring Boot web application instrumented with automated CI, dependency graph s
 
 ## Risk and compliance workflows
 
-- `.github/workflows/risk-ai-advisor.yml` — AI-weighted release-risk verdict over open CodeQL and Dependabot alerts (advisory by default). Supports `workflow_dispatch` inputs for the **deployment environment and its exposure** (e.g. `production - public internet-facing` vs. `production - internal-only network`; defaults to the highest-exposure case and drives the release context so exposure weighting matches the target), the `fail-on` blocking threshold, and the GitHub Models `model`.
-- `.github/workflows/risk-sla-gate.yml`
+- `.github/workflows/risk-ai-advisor.yml` — AI-weighted release-risk verdict over open CodeQL and Dependabot alerts, enriched with the CISA Known Exploited Vulnerabilities (KEV) catalog and emitting a signed JSON advisory report tied to the audited commit. Duplicate Dependabot alerts sharing a CVE/advisory are collapsed before assessment. Advisory by default. `workflow_dispatch` inputs:
+  - **deployment environment and exposure** (e.g. `production - public internet-facing` vs. `production - internal-only network`; defaults to the highest-exposure case and drives the release context so the model weights exposure to match the target);
+  - **compensating controls in place** — none selected by default; tick any of WAF, load balancer, CDN with DDoS protection, network isolation, or rate limiting (plus a free-text field for others) so the model factors them into exploitability and blast-radius reasoning (treated as risk-reducing, never as a reason to dismiss a critical or known-exploited finding);
+  - **`fail-on`** blocking threshold (advisory when empty); and
+  - the GitHub Models **`model`**.
+- `.github/workflows/risk-sla-gate.yml` — audits open Dependabot alerts against severity-based remediation SLAs (default: critical 7 / high 30 / medium 60 / low 90 days, measured from the CVE published date) and emits a signed JSON compliance report tied to the audited commit. Runs on demand, daily (06:17 UTC), and on push/PR to `main`. The `mode` input selects `audit` (report-only, default) or `enforce` (fails the job on violations in the enforced severities — `critical,high`).
 
 ## Custom Actions
 
