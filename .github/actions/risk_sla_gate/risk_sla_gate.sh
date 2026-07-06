@@ -417,7 +417,10 @@ if [[ "$AI_ASSESS" == "true" ]]; then
             type: "json_schema",
             json_schema: { name: "release_risk_assessment", strict: true, schema: $schema }
           },
-          max_tokens: 1500
+          # Verdicts with several KEV/critical findings and detailed why_it_matters
+          # text run long; 1500 tokens truncated the JSON mid-string (unparseable).
+          # Give the completion ample room — the output is bounded by the schema.
+          max_tokens: 4000
         }')
 
       # Fits, or we're already at the minimum — stop shrinking.
@@ -463,6 +466,10 @@ if [[ "$AI_ASSESS" == "true" ]]; then
     echo "::endgroup::"
 
     CONTENT=$(jq -r '.choices[0].message.content // empty' < "$RESP_FILE")
+    # finish_reason == "length" means the model hit max_tokens and the JSON was cut
+    # off mid-stream, so it won't parse. Capture it before removing the response so
+    # we can report the real cause instead of a generic parse failure.
+    FINISH_REASON=$(jq -r '.choices[0].finish_reason // "unknown"' < "$RESP_FILE")
     rm -f "$RESP_FILE"
     if [[ -z "$CONTENT" ]]; then
       echo "::error::GitHub Models returned no content to parse."
@@ -470,7 +477,11 @@ if [[ "$AI_ASSESS" == "true" ]]; then
     fi
 
     if ! VERDICT=$(jq -e . <<< "$CONTENT" 2>/dev/null); then
-      echo "::error::Could not parse the model's JSON verdict. Raw content: $(head -c 800 <<< "$CONTENT")"
+      if [[ "$FINISH_REASON" == "length" ]]; then
+        echo "::error::The model's JSON verdict was truncated (finish_reason=length) before it could be completed, so it can't be parsed. This usually means too many/verbose key_risks for the output budget — lower 'max-alerts' to send fewer findings, or raise the max_tokens value in risk_sla_gate.sh. Raw (truncated) content: $(head -c 800 <<< "$CONTENT")"
+      else
+        echo "::error::Could not parse the model's JSON verdict (finish_reason=${FINISH_REASON}). Raw content: $(head -c 800 <<< "$CONTENT")"
+      fi
       exit 1
     fi
     AI_MODEL_USED="$AI_MODEL"
