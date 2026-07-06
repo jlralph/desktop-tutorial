@@ -13,6 +13,29 @@ In `audit` mode the gate reports violations but never fails the job. In
 `enforce-severities` is over its SLA. Violations in non-enforced severities
 are always reported but never block.
 
+## Core inputs
+
+| Input | Default | Purpose |
+|---|---|---|
+| `github-token` | *(required)* | Token that can read Dependabot alerts (see [Token requirements](#token-requirements)). |
+| `repository` | `${{ github.repository }}` | Repository to audit, in `owner/repo` form. |
+| `mode` | `audit` | `audit` (report only) or `enforce` (fail on SLA violations). |
+| `enforce-severities` | `critical,high` | Severities that fail the job in `enforce` mode. |
+| `sla-critical` | `7` | Remediation SLA in days for critical alerts. |
+| `sla-high` | `30` | Remediation SLA in days for high alerts. |
+| `sla-medium` | `60` | Remediation SLA in days for medium alerts. |
+| `sla-low` | `90` | Remediation SLA in days for low alerts. |
+| `upload-report` | `true` | Upload the JSON compliance report as a workflow artifact. |
+| `report-retention-days` | `90` | Artifact retention (silently clamped to the repo max). |
+| `attest-report` | `true` | Generate signed provenance attestations for the report and artifact bundle. |
+
+## Outputs
+
+`result` (`pass` / `fail` / `informational`), `violation-count`,
+`enforced-violation-count`, `audited-commit`, `report-path`, `attestation-url`,
+and `bundle-attestation-url`. The AI-specific outputs are listed
+[below](#additional-outputs-ai).
+
 ## AI risk assessment (optional)
 
 Set `ai-assess: "true"` to also have an AI model (via
@@ -28,10 +51,13 @@ catalog is cached once per day across runs.
 
 The AI verdict is **advisory by default** — it is always written to the step
 summary, the compliance report (under an `ai_assessment` section), and the
-`ai-*` / `kev-matched` outputs, but never blocks. Set `ai-fail-on` to a severity
-**threshold** (e.g. `high` fails on high and critical) to let the verdict fail
-the job. This gate is independent of `mode`/`enforce-severities`: if either the
-SLA enforcement or the AI threshold trips, the job fails.
+`ai-*` / `kev-matched` outputs, but never blocks. To let the verdict fail the
+job you need **both** `mode: enforce` **and** `ai-fail-on` set to a severity
+**threshold** (e.g. `high` fails on high and critical). Like the deterministic
+SLA gate, the AI assessment is report-only in `audit` mode — it always runs and
+records its verdict, but never blocks. The two gates are otherwise independent
+(the AI threshold is separate from `enforce-severities`): in `enforce` mode, if
+either the SLA enforcement or the AI threshold trips, the job fails.
 
 The exact prompts sent and the raw model response are logged (collapsed) in the
 workflow run for auditability; they contain only public alert metadata and
@@ -119,7 +145,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run Risk SLA Gate
-        uses: ./risk_sla_gate
+        uses: ./.github/actions/risk_sla_gate
         with:
           github-token: ${{ secrets.DEPENDABOT_ALERTS_TOKEN }}
           mode: enforce                 # or 'audit'

@@ -109,12 +109,3 @@ jobs:
 
               console.log(`Created issue: ${title}`);
             }
-
-      - name: Run my custom action
-        id: action
-        uses: ./.github/actions/my-action
-        with:
-          input-name: 'Hello World'
-
-      - name: Use output
-        run: echo "Output was:${{ steps.action.outputs.output-name }}"
