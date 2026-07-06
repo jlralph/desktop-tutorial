@@ -501,7 +501,10 @@ if [[ "$AI_ASSESS" == "true" ]]; then
   AI_LEVEL_RANK='{"critical":0,"high":1,"medium":2,"low":3,"minimal":4}'
   AI_FAIL_ON_COUNT=$(jq 'length' <<< "$AI_FAIL_ON_JSON")
   AI_THRESHOLD_LEVEL=""
-  if [[ "$AI_FAIL_ON_COUNT" -eq 0 ]]; then
+  if [[ "$MODE" == "audit" ]]; then
+    AI_RESULT="advisory"
+    AI_THRESHOLD_LEVEL=""
+  elif [[ "$AI_FAIL_ON_COUNT" -eq 0 ]]; then
     AI_RESULT="advisory"
   else
     # Lower rank = more severe. Threshold = least severe (max rank) level listed.
@@ -596,7 +599,11 @@ if [[ "$AI_ASSESS" == "true" ]]; then
       echo ""
     fi
     case "$AI_RESULT" in
-      advisory) echo "**AI result: ℹ️ ADVISORY** — reporting only; no \`ai-fail-on\` threshold is set, so this never blocks." ;;
+      advisory) if [[ "$MODE" == "audit" ]]; then
+                   echo "**AI result: ℹ️ ADVISORY** — audit mode is active, so the AI assessment is reported only and never blocks the pipeline."
+                 else
+                   echo "**AI result: ℹ️ ADVISORY** — reporting only; no \`ai-fail-on\` threshold is set, so this never blocks."
+                 fi ;;
       pass)     echo "**AI result: ✅ PASS** — AI risk level \`${AI_RISK_LEVEL}\` is below the \`ai-fail-on\` threshold (\`${AI_THRESHOLD_LEVEL}\` and above)." ;;
       fail)     echo "**AI result: ❌ FAIL** — AI risk level \`${AI_RISK_LEVEL}\` is at or above the \`ai-fail-on\` threshold (\`${AI_THRESHOLD_LEVEL}\` and above). Blocking this release." ;;
     esac
@@ -649,9 +656,9 @@ if [[ "$MODE" == "enforce" && "$ENFORCED_COUNT" -gt 0 ]]; then
   SLA_ENFORCE_FAIL=1
   echo "::error::Risk SLA Gate failed: ${ENFORCED_COUNT} Dependabot alert(s) in enforced severities ($(jq -r 'join(", ")' <<< "$ENFORCE_JSON")) exceed their remediation SLA. See the job summary and compliance report for details."
 fi
-if [[ "$AI_ENFORCE_FAIL" -eq 1 ]]; then
+if [[ "$MODE" != "audit" && "$AI_ENFORCE_FAIL" -eq 1 ]]; then
   echo "::error::Risk SLA Gate AI assessment failed: assessed risk level '${AI_RISK_LEVEL}' meets the 'ai-fail-on' threshold. See the job summary and compliance report for details."
 fi
-if [[ "$SLA_ENFORCE_FAIL" -eq 1 || "$AI_ENFORCE_FAIL" -eq 1 ]]; then
+if [[ "$SLA_ENFORCE_FAIL" -eq 1 || ( "$MODE" != "audit" && "$AI_ENFORCE_FAIL" -eq 1 ) ]]; then
   exit 1
 fi

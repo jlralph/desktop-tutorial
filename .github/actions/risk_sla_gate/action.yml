@@ -66,9 +66,10 @@ inputs:
     description: >-
       Also ask an AI model (via GitHub Models) to weigh the open Dependabot
       alerts together with their SLA status (age, SLA, days over) and CISA KEV
-      known-exploited data, and emit an overall release-risk verdict. Advisory
-      by default; set 'ai-fail-on' to let it block. When 'false' (default) no
-      model is called and behavior is unchanged.
+      known-exploited data, and emit an overall release-risk verdict. The AI
+      assessment is advisory by default and remains report-only in 'audit'
+      mode; when mode is 'enforce', set 'ai-fail-on' to let it block. When
+      'false' (default) no model is called and behavior is unchanged.
     required: false
     default: "false"
   models-token:
@@ -111,10 +112,11 @@ inputs:
     description: >-
       AI risk level at or above which the job fails, treated as a severity
       THRESHOLD (e.g. 'high' fails on high and critical). Leave empty (default)
-      for advisory-only behavior — the verdict is always reported but never
-      blocks. Independent of 'mode'/'enforce-severities' (the deterministic SLA
-      gate); if either gate trips, the job fails. Valid: critical, high, medium,
-      low, minimal.
+      for advisory-only behavior — the verdict is always reported and, in
+      'audit' mode, never blocks. In 'enforce' mode, the AI verdict can fail
+      the job when it reaches the threshold. Independent of
+      'mode'/'enforce-severities' (the deterministic SLA gate); if either gate
+      trips, the job fails. Valid: critical, high, medium, low, minimal.
     required: false
     default: ""
   max-alerts:
