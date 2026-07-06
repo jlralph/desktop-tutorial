@@ -129,7 +129,10 @@ jobs:
           sla-medium: "60"
           sla-low: "90"
           upload-report: "true"
-          report-retention-days: "365"  # align with your audit retention policy
+          # Capped at the repo's max artifact retention (default 90); higher values
+          # are silently clamped. Raise the repo/org "Artifact and log retention"
+          # setting first if your audit policy needs a longer window.
+          report-retention-days: "90"
           # --- Optional AI risk assessment (SLA- and KEV-aware) ---
           ai-assess: "true"
           models-token: ${{ github.token }}   # needs 'models: read'
