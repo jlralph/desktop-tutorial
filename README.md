@@ -1,86 +1,44 @@
 # security-workflow-examples
 
-A Spring Boot web application instrumented with automated CI, dependency graph submission, and a broad security scanning pipeline.
+This repository is a small Spring Boot sample used to demonstrate CI, dependency monitoring, and security scanning workflows in GitHub Actions.
 
-## Stack
+## Current code snapshot
 
-- **Java 25**
-- **Spring Boot 4.0.6**
-- **Maven**
-- Spring Web, Spring Boot Actuator, Spring Boot Test
-- Includes an intentionally vulnerable dependency: `org.apache.logging.log4j:log4j-core:2.14.1` (Log4Shell, CVE-2021-44228, listed in the CISA KEV catalog), pinned to override Spring Boot's managed patched version so it exercises the security-scan and Risk AI Advisor KEV paths
+The application currently consists of a minimal Spring Boot service with a greeting helper and two REST endpoints:
 
-## Application snapshot
-
-- `src/main/java/com/example/App.java` — Spring Boot entry point + greeting helper
-- `src/main/java/com/example/HelloController.java` — REST endpoints
+- [src/main/java/com/example/App.java](src/main/java/com/example/App.java) — Spring Boot entry point and greeting logic
+- [src/main/java/com/example/HelloController.java](src/main/java/com/example/HelloController.java) — REST controller exposing:
   - GET `/`
   - GET `/hello/{name}`
-- `src/test/java/com/example/AppTest.java` — unit tests for greeting behavior
+- [src/test/java/com/example/AppTest.java](src/test/java/com/example/AppTest.java) — unit tests for the greeting behavior
+- [pom.xml](pom.xml) — Maven build file targeting Java 25 and Spring Boot 4.0.6
+- [scripts/create-cve-issues.sh](scripts/create-cve-issues.sh) — helper script that turns OWASP Dependency Check output into GitHub issues
 
-## CI / GitHub Actions
+The build also pins an intentionally vulnerable dependency, `org.apache.logging.log4j:log4j-core:2.14.1`, to exercise vulnerability scanning and KEV-related workflows.
 
-- `.github/workflows/maven.yml` — manual Java CI build with Maven and dependency graph submission
-- `.github/workflows/dependency-graph.yml` — dependency graph upload on push
+## Run locally
 
-## SAST (Static Analysis)
+```bash
+mvn test
+mvn spring-boot:run
+```
 
-- `.github/workflows/sast-codeql.yml`
-- `.github/workflows/sast-codacy.yml`
-- `.github/workflows/sast-osv-scanner.yml`
-- `.github/workflows/sast-osv-scanner-container.yml`
-- `.github/workflows/sast-owasp-dependency-check.yml`
-- `.github/workflows/sast-poutine.yml`
+Then open:
 
-## DAST (Dynamic Analysis)
+- http://localhost:8080/
+- http://localhost:8080/hello/Java
 
-- `.github/workflows/dast-zap.yml`
-- `.github/workflows/dast-dastardly.yml`
+## Repository layout
 
-## Risk and compliance workflows
+- [src/main/java](src/main/java) — application source
+- [src/test/java](src/test/java) — tests
+- [.github/workflows](.github/workflows) — CI and security workflow definitions
+- [.github/actions](.github/actions) — reusable workflow actions
 
-- `.github/workflows/risk-ai-advisor.yml` — AI-weighted release-risk verdict over open CodeQL and Dependabot alerts, enriched with the CISA Known Exploited Vulnerabilities (KEV) catalog and emitting a signed JSON advisory report tied to the audited commit. Duplicate Dependabot alerts sharing a CVE/advisory are collapsed before assessment. Advisory by default. `workflow_dispatch` inputs:
-  - **deployment environment and exposure** (e.g. `production - public internet-facing` vs. `production - internal-only network`; defaults to the highest-exposure case and drives the release context so the model weights exposure to match the target);
-  - **compensating controls in place** — none selected by default; tick any of WAF, load balancer, CDN with DDoS protection, network isolation, or rate limiting (plus a free-text field for others) so the model factors them into exploitability and blast-radius reasoning (treated as risk-reducing, never as a reason to dismiss a critical or known-exploited finding);
-  - **`fail-on`** blocking threshold (advisory when empty); and
-  - the GitHub Models **`model`**.
-- `.github/workflows/risk-sla-gate.yml` — audits open Dependabot alerts against severity-based remediation SLAs (default: critical 7 / high 30 / medium 60 / low 90 days, measured from the CVE published date) and emits a signed JSON compliance report tied to the audited commit. Runs on demand, daily (06:17 UTC), and on push/PR to `main`. The `mode` input selects `audit` (report-only, default) or `enforce` (fails the job on violations in the enforced severities — `critical,high`).
+## Security workflows present
 
-## Custom Actions
-
-- `.github/actions/my-action/`
-- `.github/actions/risk_ai_advisor/`
-- `.github/actions/risk_sla_gate/`
-- `.github/actions/sast-osv-scanner-container/`
-- `.github/actions/sast-owasp-dependency-check/`
-- `.github/actions/dast-dastardly/`
-
-## Scripts
-
-- `scripts/create-cve-issues.sh` — parses OWASP Dependency Check JSON output and synchronizes GitHub issues for detected CVEs
-
-## Badges
-
-[![Java CI with Maven](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/maven.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/maven.yml)
-
-[![Update Dependency Graph](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/dependency-graph.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/dependency-graph.yml)
-
-[![SAST (CodeQL)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-codeql.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-codeql.yml)
-
-[![SAST (Codacy)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-codacy.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-codacy.yml)
-
-[![SAST (OSV-Scanner)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-osv-scanner.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-osv-scanner.yml)
-
-[![SAST (OSV-Scanner-Container)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-osv-scanner-container.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-osv-scanner-container.yml)
-
-[![SAST (OWASP Dependency Check)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-owasp-dependency-check.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-owasp-dependency-check.yml)
-
-[![SAST (Poutine)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-poutine.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/sast-poutine.yml)
-
-[![DAST (Checkmarx ZAP)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/dast-zap.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/dast-zap.yml)
-
-[![DAST (Dastardly)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/dast-dastardly.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/dast-dastardly.yml)
-
-[![Risk AI Advisor](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/risk-ai-advisor.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/risk-ai-advisor.yml)
-
-[![Risk SLA Gate](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/risk-sla-gate.yml/badge.svg)](https://github.com/jlralph/security-scan-workflows-examples/actions/workflows/risk-sla-gate.yml)
+- [.github/workflows/maven.yml](.github/workflows/maven.yml) — Maven build and dependency graph submission
+- [.github/workflows/dependency-graph.yml](.github/workflows/dependency-graph.yml) — dependency graph upload
+- [.github/workflows/sast-codeql.yml](.github/workflows/sast-codeql.yml), [.github/workflows/sast-codacy.yml](.github/workflows/sast-codacy.yml), [.github/workflows/sast-osv-scanner.yml](.github/workflows/sast-osv-scanner.yml), [.github/workflows/sast-osv-scanner-container.yml](.github/workflows/sast-osv-scanner-container.yml), [.github/workflows/sast-owasp-dependency-check.yml](.github/workflows/sast-owasp-dependency-check.yml), and [.github/workflows/sast-poutine.yml](.github/workflows/sast-poutine.yml) — static analysis coverage
+- [.github/workflows/dast-zap.yml](.github/workflows/dast-zap.yml) and [.github/workflows/dast-dastardly.yml](.github/workflows/dast-dastardly.yml) — dynamic analysis coverage
+- [.github/workflows/risk-ai-advisor.yml](.github/workflows/risk-ai-advisor.yml) and [.github/workflows/risk-sla-gate.yml](.github/workflows/risk-sla-gate.yml) — release-risk and SLA compliance workflows
