@@ -14,6 +14,23 @@ on:
         options:
           - audit
           - enforce
+      ai_assess:
+        description: "Also run the AI risk assessment (SLA- and KEV-aware verdict)."
+        required: false
+        default: false
+        type: boolean
+      ai_fail_on:
+        description: "AI risk threshold that fails the job (empty = advisory only)."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - critical
+          - high
+          - medium
+          - low
+          - minimal
   schedule:
     # Daily at 06:17 UTC. Schedules always run against the default branch.
     - cron: "17 6 * * *"
@@ -30,6 +47,9 @@ permissions:
   # attestations lets the run persist the signed attestation to the repo.
   id-token: write
   attestations: write
+  # Required only when the optional AI risk assessment is enabled (ai-assess):
+  # the action calls the GitHub Models inference API with the workflow token.
+  models: read
 
 jobs:
   risk-sla-gate:
@@ -58,6 +78,14 @@ jobs:
           sla-low: "90"
           upload-report: "true"
           report-retention-days: "365"
+          # Optional AI risk assessment. Off unless dispatched with ai_assess=true.
+          # Advisory by default; scheduled/PR runs never call the model.
+          ai-assess: ${{ github.event.inputs.ai_assess || 'false' }}
+          # The Dependabot PAT typically lacks 'models: read'; use the workflow
+          # token for the GitHub Models inference call.
+          models-token: ${{ github.token }}
+          ai-fail-on: ${{ github.event.inputs.ai_fail_on || '' }}
+          deployment-environment: "production - public internet-facing"
 
       - name: Echo gate result
         if: always()
@@ -69,3 +97,8 @@ jobs:
           echo "Compliance report path:    ${{ steps.gate.outputs.report-path }}"
           echo "Signed report attestation: ${{ steps.gate.outputs.attestation-url }}"
           echo "Signed bundle attestation: ${{ steps.gate.outputs.bundle-attestation-url }}"
+          echo "AI result:                 ${{ steps.gate.outputs.ai-result }}"
+          echo "AI risk level:             ${{ steps.gate.outputs.ai-risk-level }}"
+          echo "AI recommendation:         ${{ steps.gate.outputs.ai-recommendation }}"
+          echo "Known-exploited (KEV):     ${{ steps.gate.outputs.kev-matched }}"
+          echo "AI summary:                ${{ steps.gate.outputs.ai-summary }}"

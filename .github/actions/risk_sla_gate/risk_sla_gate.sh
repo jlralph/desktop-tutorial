@@ -14,6 +14,24 @@ MODE="${MODE:-audit}"
 ENFORCE_SEVERITIES="${ENFORCE_SEVERITIES:-critical,high}"
 REPORT_PATH="risk-sla-gate-report-${GITHUB_SHA}.json"
 
+# --- Optional AI risk assessment ---------------------------------------------
+# When AI_ASSESS=true, after the deterministic SLA evaluation the gate also asks a
+# GitHub Models LLM to weigh the open alerts — with their SLA status included — and
+# emit an overall risk verdict. Advisory by default; AI_FAIL_ON can make it block.
+AI_ASSESS="${AI_ASSESS:-false}"
+# Token used for the GitHub Models inference API (needs 'models: read'). The
+# Dependabot PAT in GH_TOKEN usually lacks that scope, so this defaults to it only
+# as a fallback — callers should pass the workflow's GITHUB_TOKEN via models-token.
+MODELS_TOKEN="${MODELS_TOKEN:-$GH_TOKEN}"
+AI_MODEL="${AI_MODEL:-openai/gpt-4.1}"
+DEPLOYMENT_ENVIRONMENT="${DEPLOYMENT_ENVIRONMENT:-production - public internet-facing}"
+APP_CONTEXT="${APP_CONTEXT:-A build being released to a public-facing, internet-exposed website.}"
+# Compensating controls (WAF, load balancer, etc.) selected for this run, if any.
+MITIGATIONS="${MITIGATIONS:-}"
+AI_FAIL_ON="${AI_FAIL_ON:-}"
+MAX_ALERTS="${MAX_ALERTS:-75}"
+AI_VALID_LEVELS="critical high medium low minimal"
+
 # --- Validate inputs --------------------------------------------------------
 if [[ "$MODE" != "enforce" && "$MODE" != "audit" ]]; then
   echo "::error::Input 'mode' must be 'enforce' or 'audit' (got '${MODE}')."
@@ -26,6 +44,26 @@ for var in SLA_CRITICAL SLA_HIGH SLA_MEDIUM SLA_LOW; do
     exit 1
   fi
 done
+
+# Normalize + validate the AI fail-on threshold list (only meaningful when AI is
+# enabled, but validated unconditionally so a typo surfaces early).
+AI_FAIL_ON_JSON=$(jq -nc --arg s "$AI_FAIL_ON" \
+  '$s | ascii_downcase | split(",") | map(gsub("\\s+"; "")) | map(select(length > 0)) | unique')
+while read -r lvl; do
+  [[ -z "$lvl" ]] && continue
+  if ! grep -qw "$lvl" <<< "$AI_VALID_LEVELS"; then
+    echo "::error::Input 'ai-fail-on' contains invalid risk level '${lvl}'. Valid: ${AI_VALID_LEVELS// /, }."
+    exit 1
+  fi
+done < <(jq -r '.[]' <<< "$AI_FAIL_ON_JSON")
+
+if [[ "$AI_ASSESS" == "true" ]]; then
+  if ! [[ "$MAX_ALERTS" =~ ^[0-9]+$ ]]; then
+    echo "::error::Input 'max-alerts' must be a non-negative integer (got '${MAX_ALERTS}')."
+    exit 1
+  fi
+  : "${MODELS_TOKEN:?MODELS_TOKEN is required when ai-assess is true}"
+fi
 
 SLAS=$(jq -nc \
   --argjson c "$SLA_CRITICAL" --argjson h "$SLA_HIGH" \
@@ -77,6 +115,7 @@ EVALUATED=$(jq -c \
         ecosystem: .dependency.package.ecosystem,
         manifest_path: (.dependency.manifest_path | norm_manifest),
         cve_id: (.security_advisory.cve_id // .security_advisory.ghsa_id // "N/A"),
+        cve: (.security_advisory.cve_id // ""),
         ghsa_id: .security_advisory.ghsa_id,
         severity: $sev,
         cve_published_at: $pub_iso,
@@ -210,8 +249,376 @@ echo "Compliance report written to ${REPORT_PATH}"
 
 echo "Result: ${RESULT} | open=${TOTAL_OPEN} violations=${VIOLATION_COUNT} enforced=${ENFORCED_COUNT}"
 
+# --- Optional AI risk assessment ---------------------------------------------
+# When enabled, ask a GitHub Models LLM to weigh the open alerts together with
+# their SLA status (age, SLA, days over) and CISA KEV known-exploited data, and
+# emit an overall risk verdict. This layers on top of the deterministic SLA gate;
+# it never changes the SLA `result`, but can independently fail the job when the
+# verdict meets the `ai-fail-on` threshold. AI_ENFORCE_FAIL records that outcome so
+# the combined enforcement at the end honors both gates.
+AI_ENFORCE_FAIL=0
+if [[ "$AI_ASSESS" == "true" ]]; then
+  echo "AI risk assessment enabled; weighing open alerts (with SLA status) via GitHub Models (${AI_MODEL})..."
+
+  # --- Fetch CISA KEV catalog (known-exploited amplifier) --------------------
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  KEV_FILE=$(KEV_CACHE_DIR="${KEV_CACHE_DIR:-}" bash "${SCRIPT_DIR}/kev_catalog.sh")
+  KEV_CATALOG_SIZE=$(jq 'length' "$KEV_FILE")
+  echo "Loaded ${KEV_CATALOG_SIZE} CISA KEV catalog entries."
+
+  AI_SEV_RANK='{"critical":0,"high":1,"medium":2,"low":3}'
+
+  # Re-shape the SLA-evaluated alerts into a compact, model-friendly form and
+  # enrich each with CISA KEV data, keyed on the real CVE (empty CVEs never match).
+  # Sort KEV-first, then severity, then most-over-SLA so any truncation to fit the
+  # token budget drops the least important detail. The map is large, so it is fed
+  # to jq via --slurpfile (argv would overflow ARG_MAX).
+  AI_ALERTS=$(jq -c --argjson rank "$AI_SEV_RANK" --slurpfile kevwrap "$KEV_FILE" '
+    ($kevwrap[0] // {}) as $kev |
+    [ .[] | {
+        alert_number: .alert_number,
+        package: .package,
+        ecosystem: .ecosystem,
+        manifest: .manifest_path,
+        advisory: .cve_id,
+        cve: .cve,
+        severity: .severity,
+        cve_published_at: .cve_published_at,
+        age_days: .age_days,
+        sla_days: .sla_days,
+        days_over_sla: .days_over_sla,
+        in_violation: .in_violation,
+        first_patched_version: .first_patched_version,
+        known_exploited: (.cve != "" and ($kev[.cve] != null)),
+        kev: (if .cve != "" then $kev[.cve] else null end),
+        url: .alert_url
+      } ]
+    | sort_by([(.known_exploited | not), ($rank[.severity] // 5), -(.days_over_sla)])' <<< "$EVALUATED")
+  # Keep the file when it lives in the cache dir so actions/cache can persist it.
+  [[ -z "${KEV_CACHE_DIR:-}" ]] && rm -f "$KEV_FILE"
+
+  # Distinct CVEs across the open alerts that are in the KEV catalog (exploited).
+  KEV_MATCHED=$(jq '[ .[] | select(.known_exploited) | .cve ] | unique | length' <<< "$AI_ALERTS")
+
+  # Compensating controls text fed to the model and recorded for audit.
+  MITIGATIONS_TEXT="$MITIGATIONS"
+  [[ -z "${MITIGATIONS_TEXT//[[:space:]]/}" ]] && MITIGATIONS_TEXT="None specified."
+  MITIGATIONS_CELL=$(printf '%s' "$MITIGATIONS_TEXT" | tr '\n' ' ' | sed 's/|/\\|/g')
+
+  # Detail actually sent to the model (set by the sizing loop below); defaults cover
+  # the no-open-alerts path.
+  AI_SENT="[]"
+  AI_SENT_N=0
+  AI_TRUNC=0
+
+  if [[ "$TOTAL_OPEN" -eq 0 ]]; then
+    echo "No open Dependabot alerts; recording a clean AI verdict without calling the model."
+    VERDICT=$(jq -nc '{
+      risk_level: "minimal",
+      recommendation: "go",
+      confidence: "high",
+      summary: "No open Dependabot alerts were found for this commit.",
+      key_risks: [],
+      recommended_mitigations: []
+    }')
+    AI_MODEL_USED="none (no open alerts)"
+  else
+    # --- Structured-output schema (identical shape to Risk AI Advisor) --------
+    SCHEMA=$(jq -nc '{
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        risk_level: { type: "string", enum: ["critical","high","medium","low","minimal"] },
+        recommendation: { type: "string", enum: ["block","conditional-go","go"] },
+        confidence: { type: "string", enum: ["high","medium","low"] },
+        summary: { type: "string" },
+        key_risks: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              title: { type: "string" },
+              severity: { type: "string" },
+              source: { type: "string" },
+              why_it_matters: { type: "string" }
+            },
+            required: ["title","severity","source","why_it_matters"]
+          }
+        },
+        recommended_mitigations: { type: "array", items: { type: "string" } }
+      },
+      required: ["risk_level","recommendation","confidence","summary","key_risks","recommended_mitigations"]
+    }')
+
+    SYSTEM_PROMPT="You are a principal application security engineer acting as a release gatekeeper. You assess whether a software build is safe to release to its target deployment environment by reasoning over open dependency (Dependabot) vulnerabilities, each annotated with its remediation-SLA status. The target deployment environment is: \"${DEPLOYMENT_ENVIRONMENT}\" (additional detail may appear in the user message). Calibrate your assessment to that environment's exposure and blast radius rather than assuming it is internet-facing: weigh exploitability given who can actually reach the affected dependency (the public internet for an internet-facing production site, versus a restricted internal network or an isolated pre-production environment), severity, and whether fixes are available. Each finding carries SLA fields: \"sla_days\" (the remediation deadline for its severity, measured from the CVE published date), \"age_days\" (how long it has been open), \"days_over_sla\" (how far past the deadline, 0 if within SLA), and \"in_violation\" (true when past the deadline). Treat an SLA breach as an escalating factor: a finding in violation — especially one many days over its SLA — signals overdue, accumulating risk and should push the risk level and recommendation upward, more sharply the larger \"days_over_sla\" is and the more severe the finding. Findings may also be annotated with \"known_exploited\": true and a \"kev\" object: these CVEs appear in the CISA Known Exploited Vulnerabilities (KEV) catalog, meaning active in-the-wild exploitation is confirmed. Treat any KEV-listed vulnerability as a strong escalating factor — it should push the risk level and recommendation decisively toward blocking, most sharply for internet-facing environments, when knownRansomwareCampaignUse is 'Known', or when a fix is available. KEV status and SLA breach are amplifiers, not filters: they raise the priority of matching findings but do NOT mean other findings are unimportant. You must still consider and surface non-KEV, within-SLA vulnerabilities that a security reviewer would care about — e.g. critical/high-severity issues, findings reachable in the target environment, and vulnerabilities with available fixes. Be decisive and concise. Reserve 'critical' for issues that are likely exploitable in the target environment with serious impact (for internet-facing deployments, remotely exploitable and KEV-listed vulnerabilities are prime candidates). The user message may list compensating controls already deployed in front of the application (for example a WAF, load balancer, CDN with DDoS protection, network isolation, or rate limiting). When controls are listed, factor them into your exploitability and blast-radius reasoning — they can lower the practical risk of a finding — but treat them as risk-reducing, NOT risk-eliminating: controls can be misconfigured, bypassed, or simply not cover a given finding, so never downgrade a critical, KEV-listed, or badly SLA-breached vulnerability to negligible solely because a mitigation is present. Note in why_it_matters when a listed control materially changed your assessment. Output only what the provided JSON schema allows."
+
+    # --- Size the request to the model's input-token limit ------------------
+    # GitHub Models caps the request body; an HTTP 413 kills the run. Slim each
+    # alert and shrink how many are sent until the serialized request fits a
+    # conservative char budget (~4 chars/token). Alerts are pre-sorted KEV-/
+    # severity-/over-SLA-first, so trimming drops the least important detail.
+    REQ_CHAR_BUDGET=24000   # ~6000 tokens, safely under the 8000-token cap
+    TEXT_MAX=280            # cap on per-alert free-text
+
+    slim_alerts() {  # $1 = max items to keep
+      jq -c --argjson n "$1" --argjson t "$TEXT_MAX" '[ .[0:$n][] | {
+          alert_number, severity, package, ecosystem, manifest, advisory, cve,
+          age_days, sla_days, days_over_sla, in_violation,
+          first_patched_version, known_exploited,
+          kev: (if .kev != null then { cve: .kev.cve, known_ransomware: .kev.known_ransomware, due_date: .kev.due_date } else null end),
+          url
+        } ]' <<< "$AI_ALERTS"
+    }
+
+    N_SENT="$MAX_ALERTS"
+    while :; do
+      AI_SENT=$(slim_alerts "$N_SENT")
+      AI_SENT_N=$(jq 'length' <<< "$AI_SENT")
+      AI_TRUNC=$(( TOTAL_OPEN > AI_SENT_N ? TOTAL_OPEN - AI_SENT_N : 0 ))
+
+      USER_PROMPT=$(jq -nr \
+        --arg ctx "$APP_CONTEXT" \
+        --arg env "$DEPLOYMENT_ENVIRONMENT" \
+        --arg repo "$REPOSITORY" \
+        --arg sha "${GITHUB_SHA:-n/a}" \
+        --arg mode "$MODE" \
+        --argjson alerts "$AI_SENT" \
+        --argjson total "$TOTAL_OPEN" \
+        --argjson trunc "$AI_TRUNC" \
+        --argjson slas "$SLAS" \
+        --argjson violations "$VIOLATION_COUNT" \
+        --argjson enforced "$ENFORCED_COUNT" \
+        --argjson kev_size "$KEV_CATALOG_SIZE" \
+        --argjson kev_matched "$KEV_MATCHED" \
+        --arg mitig "$MITIGATIONS_TEXT" \
+        '"Release context: \($ctx)\n" +
+         "Deployment environment: \($env)\n" +
+         "Compensating controls already in place: \($mitig)\n" +
+         "Repository: \($repo)\nCommit: \($sha)\nSLA gate mode: \($mode)\n\n" +
+         "Remediation SLA policy (days from CVE published date): critical=\($slas.critical), high=\($slas.high), medium=\($slas.medium), low=\($slas.low).\n" +
+         "Open Dependabot alerts: \($total) (showing \($alerts | length), \($trunc) omitted for brevity).\n" +
+         "Alerts over their SLA: \($violations) total, \($enforced) in enforced severities.\n" +
+         "CISA KEV catalog: \($kev_size) entries loaded; \($kev_matched) distinct CVE(s) across the open alerts match the KEV catalog (actively exploited in the wild). Findings are annotated with \"known_exploited\" and a \"kev\" object when matched.\n\n" +
+         "Dependabot findings with SLA status (JSON):\n" + ($alerts | tojson) + "\n\n" +
+         "Assess the OVERALL risk of releasing this build to the environment described above. Give decisive weight to any KEV-listed (known_exploited) vulnerability and to findings badly past their remediation SLA (large days_over_sla). Return your verdict per the required schema. In key_risks, list ALL release-relevant issues a reviewer should weigh — not only KEV-matched or SLA-breached ones. Order key_risks by importance (KEV-listed, critical, and most-over-SLA first), set source to \"dependabot\", and call out KEV/known-exploited status and SLA breach (days_over_sla) in why_it_matters when applicable. In recommended_mitigations, give concrete, prioritized actions, remediating known-exploited and SLA-breached vulnerabilities first."')
+
+      REQ=$(jq -nc \
+        --arg model "$AI_MODEL" \
+        --arg sys "$SYSTEM_PROMPT" \
+        --arg usr "$USER_PROMPT" \
+        --argjson schema "$SCHEMA" '{
+          model: $model,
+          messages: [
+            { role: "system", content: $sys },
+            { role: "user", content: $usr }
+          ],
+          response_format: {
+            type: "json_schema",
+            json_schema: { name: "release_risk_assessment", strict: true, schema: $schema }
+          },
+          max_tokens: 1500
+        }')
+
+      # Fits, or we're already at the minimum — stop shrinking.
+      if [[ "${#REQ}" -le "$REQ_CHAR_BUDGET" || "$N_SENT" -le 1 ]]; then
+        break
+      fi
+      N_SENT=$(( N_SENT / 2 ))
+      (( N_SENT < 1 )) && N_SENT=1
+    done
+
+    if [[ "$AI_TRUNC" -gt 0 ]]; then
+      echo "Trimmed alert detail to fit the model input limit: sending ${AI_SENT_N} alert(s) (${AI_TRUNC} omitted)."
+    fi
+
+    # Emit the exact prompt actually sent (all inputs resolved) to the workflow log
+    # so the inference is auditable. Only public alert metadata + config inputs; no
+    # tokens/secrets.
+    echo "::group::Risk SLA Gate AI — model request: system prompt"
+    echo "$SYSTEM_PROMPT"
+    echo "::endgroup::"
+    echo "::group::Risk SLA Gate AI — model request: user prompt (input values included)"
+    echo "$USER_PROMPT"
+    echo "::endgroup::"
+
+    echo "Requesting risk assessment from GitHub Models (${AI_MODEL})..."
+    RESP_FILE=$(mktemp)
+    HTTP_CODE=$(curl -sS -o "$RESP_FILE" -w '%{http_code}' \
+      -X POST "https://models.github.ai/inference/chat/completions" \
+      -H "Authorization: Bearer ${MODELS_TOKEN}" \
+      -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2026-03-10" \
+      -H "Content-Type: application/json" \
+      -d "$REQ" || echo "000")
+
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      echo "::error::GitHub Models inference failed (HTTP ${HTTP_CODE}). Ensure the calling job grants 'models: read' and the model id '${AI_MODEL}' is valid. Response: $(tr '\n' ' ' < "$RESP_FILE" | head -c 800)"
+      rm -f "$RESP_FILE"
+      exit 1
+    fi
+
+    echo "::group::Risk SLA Gate AI — model response: raw API body"
+    jq . "$RESP_FILE" 2>/dev/null || cat "$RESP_FILE"
+    echo "::endgroup::"
+
+    CONTENT=$(jq -r '.choices[0].message.content // empty' < "$RESP_FILE")
+    rm -f "$RESP_FILE"
+    if [[ -z "$CONTENT" ]]; then
+      echo "::error::GitHub Models returned no content to parse."
+      exit 1
+    fi
+
+    if ! VERDICT=$(jq -e . <<< "$CONTENT" 2>/dev/null); then
+      echo "::error::Could not parse the model's JSON verdict. Raw content: $(head -c 800 <<< "$CONTENT")"
+      exit 1
+    fi
+    AI_MODEL_USED="$AI_MODEL"
+
+    echo "::group::Risk SLA Gate AI — model response: verdict JSON"
+    jq . <<< "$VERDICT"
+    echo "::endgroup::"
+  fi
+
+  # --- Extract verdict fields ------------------------------------------------
+  AI_RISK_LEVEL=$(jq -r '.risk_level' <<< "$VERDICT")
+  AI_RECOMMENDATION=$(jq -r '.recommendation' <<< "$VERDICT")
+  AI_CONFIDENCE=$(jq -r '.confidence' <<< "$VERDICT")
+  AI_SUMMARY=$(jq -r '.summary' <<< "$VERDICT")
+
+  # --- Determine AI gate result (fail-on is a severity THRESHOLD) -------------
+  AI_LEVEL_RANK='{"critical":0,"high":1,"medium":2,"low":3,"minimal":4}'
+  AI_FAIL_ON_COUNT=$(jq 'length' <<< "$AI_FAIL_ON_JSON")
+  AI_THRESHOLD_LEVEL=""
+  if [[ "$AI_FAIL_ON_COUNT" -eq 0 ]]; then
+    AI_RESULT="advisory"
+  else
+    # Lower rank = more severe. Threshold = least severe (max rank) level listed.
+    AI_THRESHOLD_RANK=$(jq -r --argjson rank "$AI_LEVEL_RANK" '[ .[] | $rank[.] ] | max' <<< "$AI_FAIL_ON_JSON")
+    AI_THRESHOLD_LEVEL=$(jq -rn --argjson rank "$AI_LEVEL_RANK" --argjson t "$AI_THRESHOLD_RANK" \
+      '$rank | to_entries | map(select(.value == $t)) | .[0].key')
+    AI_RISK_RANK=$(jq -nr --argjson rank "$AI_LEVEL_RANK" --arg r "$AI_RISK_LEVEL" '$rank[$r] // 99')
+    if [[ "$AI_RISK_RANK" -le "$AI_THRESHOLD_RANK" ]]; then
+      AI_RESULT="fail"
+      AI_ENFORCE_FAIL=1
+    else
+      AI_RESULT="pass"
+    fi
+  fi
+
+  # --- Merge the AI assessment into the existing compliance report ------------
+  # Re-emit the single report file with an added ai_assessment section so the one
+  # attested/uploaded report carries both the SLA audit and the AI verdict.
+  AI_SECTION=$(jq -n \
+    --arg model "$AI_MODEL_USED" \
+    --arg deployment_environment "$DEPLOYMENT_ENVIRONMENT" \
+    --arg app_context "$APP_CONTEXT" \
+    --arg mitigations "$MITIGATIONS_TEXT" \
+    --arg result "$AI_RESULT" \
+    --argjson fail_on "$AI_FAIL_ON_JSON" \
+    --argjson kev_catalog_size "$KEV_CATALOG_SIZE" \
+    --argjson kev_matched "$KEV_MATCHED" \
+    --argjson alerts_considered "$TOTAL_OPEN" \
+    --argjson alerts_truncated "$AI_TRUNC" \
+    --argjson verdict "$VERDICT" \
+    '{
+      model: $model,
+      deployment_environment: $deployment_environment,
+      app_context: $app_context,
+      mitigations: $mitigations,
+      result: $result,
+      fail_on: $fail_on,
+      kev_catalog_size: $kev_catalog_size,
+      kev_matched: $kev_matched,
+      alerts_considered: $alerts_considered,
+      alerts_truncated: $alerts_truncated,
+      verdict: $verdict
+    }')
+  AI_REPORT_TMP=$(mktemp)
+  jq --argjson ai "$AI_SECTION" '. + {ai_assessment: $ai}' "$REPORT_PATH" > "$AI_REPORT_TMP" && mv "$AI_REPORT_TMP" "$REPORT_PATH"
+  echo "AI assessment merged into ${REPORT_PATH}"
+
+  # --- AI step summary section -----------------------------------------------
+  ai_risk_emoji() {
+    case "$1" in
+      critical) echo "🟥" ;; high) echo "🟧" ;; medium) echo "🟨" ;;
+      low) echo "🟩" ;; minimal) echo "✅" ;; *) echo "⬜" ;;
+    esac
+  }
+  {
+    echo ""
+    echo "## 🤖 AI Risk Assessment"
+    echo ""
+    echo "| Field | Value |"
+    echo "|---|---|"
+    echo "| Deployment environment | ${DEPLOYMENT_ENVIRONMENT} |"
+    echo "| Compensating controls | ${MITIGATIONS_CELL} |"
+    echo "| Model | \`${AI_MODEL_USED}\` |"
+    echo "| 🚨 Known-exploited (CISA KEV) | ${KEV_MATCHED} |"
+    echo ""
+    if [[ "$KEV_MATCHED" -gt 0 ]]; then
+      echo "> 🚨 **${KEV_MATCHED} known-exploited CVE(s) (CISA KEV) found in open Dependabot alerts** — confirmed in-the-wild exploitation; remediate before release."
+      echo ""
+      echo "| CVE | Package | Severity | Over SLA (d) | Ransomware | KEV due date |"
+      echo "|---|---|---|---:|---|---|"
+      jq -r '[ .[] | select(.known_exploited) ] | unique_by(.cve) | .[] | "| \(.cve) | \(.package) | \(.severity) | \(.days_over_sla) | \(.kev.known_ransomware // "Unknown") | \(.kev.due_date // "n/a") |"' <<< "$AI_ALERTS"
+      echo ""
+    fi
+    echo "### $(ai_risk_emoji "$AI_RISK_LEVEL") Verdict: ${AI_RISK_LEVEL^^} — recommendation: \`${AI_RECOMMENDATION}\` (confidence: ${AI_CONFIDENCE})"
+    echo ""
+    echo "> ${AI_SUMMARY}"
+    echo ""
+    AI_KEY_RISK_COUNT=$(jq '.key_risks | length' <<< "$VERDICT")
+    if [[ "$AI_KEY_RISK_COUNT" -gt 0 ]]; then
+      echo "### Key risks (${AI_KEY_RISK_COUNT})"
+      echo ""
+      echo "| Severity | Source | Risk | Why it matters |"
+      echo "|---|---|---|---|"
+      jq -r '.key_risks[] | "| \(.severity) | \(.source) | \(.title) | \(.why_it_matters) |"' <<< "$VERDICT"
+      echo ""
+    fi
+    AI_MIT_COUNT=$(jq '.recommended_mitigations | length' <<< "$VERDICT")
+    if [[ "$AI_MIT_COUNT" -gt 0 ]]; then
+      echo "### Recommended mitigations"
+      echo ""
+      jq -r '.recommended_mitigations[] | "- \(.)"' <<< "$VERDICT"
+      echo ""
+    fi
+    case "$AI_RESULT" in
+      advisory) echo "**AI result: ℹ️ ADVISORY** — reporting only; no \`ai-fail-on\` threshold is set, so this never blocks." ;;
+      pass)     echo "**AI result: ✅ PASS** — AI risk level \`${AI_RISK_LEVEL}\` is below the \`ai-fail-on\` threshold (\`${AI_THRESHOLD_LEVEL}\` and above)." ;;
+      fail)     echo "**AI result: ❌ FAIL** — AI risk level \`${AI_RISK_LEVEL}\` is at or above the \`ai-fail-on\` threshold (\`${AI_THRESHOLD_LEVEL}\` and above). Blocking this release." ;;
+    esac
+    if [[ "$AI_TRUNC" -gt 0 ]]; then
+      echo ""
+      echo "_Note: ${AI_TRUNC} alert(s) were omitted from the model prompt to stay within the \`max-alerts\` cap (${MAX_ALERTS}) and the model's input-token limit; the SLA tables above are complete._"
+    fi
+  } >> "$GITHUB_STEP_SUMMARY"
+
+  # --- AI outputs ------------------------------------------------------------
+  {
+    echo "ai-result=${AI_RESULT}"
+    echo "ai-risk-level=${AI_RISK_LEVEL}"
+    echo "ai-recommendation=${AI_RECOMMENDATION}"
+    echo "kev-matched=${KEV_MATCHED}"
+    echo "ai-summary=$(tr '\n' ' ' <<< "$AI_SUMMARY" | head -c 500)"
+  } >> "$GITHUB_OUTPUT"
+
+  echo "AI verdict: ${AI_RISK_LEVEL} | recommendation=${AI_RECOMMENDATION} | ai-result=${AI_RESULT} | kev=${KEV_MATCHED}"
+fi
+
 # --- Enforcement --------------------------------------------------------------
+# Two independent gates can each fail the job: the deterministic SLA enforcement
+# and the optional AI verdict. Both are reported above regardless; here we fail if
+# either fired so no blocking condition is silently dropped.
+SLA_ENFORCE_FAIL=0
 if [[ "$MODE" == "enforce" && "$ENFORCED_COUNT" -gt 0 ]]; then
+  SLA_ENFORCE_FAIL=1
   echo "::error::Risk SLA Gate failed: ${ENFORCED_COUNT} Dependabot alert(s) in enforced severities ($(jq -r 'join(", ")' <<< "$ENFORCE_JSON")) exceed their remediation SLA. See the job summary and compliance report for details."
+fi
+if [[ "$AI_ENFORCE_FAIL" -eq 1 ]]; then
+  echo "::error::Risk SLA Gate AI assessment failed: assessed risk level '${AI_RISK_LEVEL}' meets the 'ai-fail-on' threshold. See the job summary and compliance report for details."
+fi
+if [[ "$SLA_ENFORCE_FAIL" -eq 1 || "$AI_ENFORCE_FAIL" -eq 1 ]]; then
   exit 1
 fi

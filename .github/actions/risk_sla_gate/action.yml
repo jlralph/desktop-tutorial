@@ -62,6 +62,70 @@ inputs:
       workflow to grant 'id-token: write' and 'attestations: write'.
     required: false
     default: "true"
+  ai-assess:
+    description: >-
+      Also ask an AI model (via GitHub Models) to weigh the open Dependabot
+      alerts together with their SLA status (age, SLA, days over) and CISA KEV
+      known-exploited data, and emit an overall release-risk verdict. Advisory
+      by default; set 'ai-fail-on' to let it block. When 'false' (default) no
+      model is called and behavior is unchanged.
+    required: false
+    default: "false"
+  models-token:
+    description: >-
+      Token used to call the GitHub Models inference API when 'ai-assess' is
+      true. Requires 'models: read'; the default GITHUB_TOKEN works when the
+      calling job grants it. The Dependabot PAT in 'github-token' usually lacks
+      this scope, so pass the workflow's GITHUB_TOKEN here.
+    required: false
+    default: ${{ github.token }}
+  ai-model:
+    description: >-
+      GitHub Models model to use for the AI assessment, in '{publisher}/{model}'
+      form (e.g. 'openai/gpt-4.1'). Only used when 'ai-assess' is true.
+    required: false
+    default: "openai/gpt-4.1"
+  deployment-environment:
+    description: >-
+      Deployment environment and its exposure, given to the model to calibrate
+      reachability and blast radius (e.g. "production - public internet-facing",
+      "production - internal-only network"). Only used when 'ai-assess' is true.
+    required: false
+    default: "production - public internet-facing"
+  app-context:
+    description: >-
+      Free-text description of what is being released and its exposure, given to
+      the model as context. Only used when 'ai-assess' is true.
+    required: false
+    default: "A build being released to a public-facing, internet-exposed website."
+  mitigations:
+    description: >-
+      Compensating controls already deployed in front of the build (e.g. a WAF,
+      CDN with DDoS protection, network isolation, rate limiting), given to the
+      model so it can weigh them when judging exploitability and blast radius.
+      Treated as risk-reducing but not risk-eliminating. Only used when
+      'ai-assess' is true. Empty (default) means none specified.
+    required: false
+    default: ""
+  ai-fail-on:
+    description: >-
+      AI risk level at or above which the job fails, treated as a severity
+      THRESHOLD (e.g. 'high' fails on high and critical). Leave empty (default)
+      for advisory-only behavior — the verdict is always reported but never
+      blocks. Independent of 'mode'/'enforce-severities' (the deterministic SLA
+      gate); if either gate trips, the job fails. Valid: critical, high, medium,
+      low, minimal.
+    required: false
+    default: ""
+  max-alerts:
+    description: >-
+      Maximum number of alerts to send to the model, highest-priority first
+      (KEV-, severity-, and most-over-SLA-first), to bound the prompt size. The
+      action also auto-trims the payload to stay within the model's input-token
+      limit. Counts are always reported in full even when the list is truncated.
+      Only used when 'ai-assess' is true.
+    required: false
+    default: "75"
 
 outputs:
   result:
@@ -79,6 +143,25 @@ outputs:
   report-path:
     description: "Path to the JSON compliance report."
     value: ${{ steps.gate.outputs.report-path }}
+  ai-result:
+    description: >-
+      AI gate outcome when 'ai-assess' is true: 'advisory' (no 'ai-fail-on'
+      set), 'pass', or 'fail'. Empty when AI assessment is disabled.
+    value: ${{ steps.gate.outputs.ai-result }}
+  ai-risk-level:
+    description: "AI-assessed overall risk: critical | high | medium | low | minimal (empty when disabled)."
+    value: ${{ steps.gate.outputs.ai-risk-level }}
+  ai-recommendation:
+    description: "AI release recommendation: block | conditional-go | go (empty when disabled)."
+    value: ${{ steps.gate.outputs.ai-recommendation }}
+  ai-summary:
+    description: "One-line AI summary of the release risk (empty when disabled)."
+    value: ${{ steps.gate.outputs.ai-summary }}
+  kev-matched:
+    description: >-
+      Number of distinct CVEs across the open Dependabot alerts that are in the
+      CISA KEV catalog (actively exploited). Empty when AI assessment is disabled.
+    value: ${{ steps.gate.outputs.kev-matched }}
   attestation-url:
     description: >-
       URL of the signed provenance attestation for the compliance report file
@@ -94,6 +177,27 @@ outputs:
 runs:
   using: "composite"
   steps:
+    # Cache the CISA KEV catalog across runs (only needed for the AI assessment).
+    # The key carries the UTC date so the cache refreshes once per day (the catalog
+    # updates ~daily); every other run that day restores the small JSON map instead
+    # of re-downloading it.
+    - name: Resolve KEV cache metadata
+      id: kev-cache-meta
+      if: ${{ inputs.ai-assess == 'true' }}
+      shell: bash
+      run: |
+        {
+          echo "date=$(date -u +%Y-%m-%d)"
+          echo "dir=${RUNNER_TEMP}/cisa-kev-cache"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Cache CISA KEV catalog
+      if: ${{ inputs.ai-assess == 'true' }}
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: ${{ steps.kev-cache-meta.outputs.dir }}
+        key: cisa-kev-catalog-${{ steps.kev-cache-meta.outputs.date }}
+
     - name: Evaluate Dependabot alerts against SLA policy
       id: gate
       shell: bash
@@ -106,6 +210,16 @@ runs:
         SLA_HIGH: ${{ inputs.sla-high }}
         SLA_MEDIUM: ${{ inputs.sla-medium }}
         SLA_LOW: ${{ inputs.sla-low }}
+        # Optional AI risk assessment (no model is called unless AI_ASSESS=true).
+        AI_ASSESS: ${{ inputs.ai-assess }}
+        MODELS_TOKEN: ${{ inputs.models-token }}
+        AI_MODEL: ${{ inputs.ai-model }}
+        DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment-environment }}
+        APP_CONTEXT: ${{ inputs.app-context }}
+        MITIGATIONS: ${{ inputs.mitigations }}
+        AI_FAIL_ON: ${{ inputs.ai-fail-on }}
+        MAX_ALERTS: ${{ inputs.max-alerts }}
+        KEV_CACHE_DIR: ${{ steps.kev-cache-meta.outputs.dir }}
       run: bash "${{ github.action_path }}/risk_sla_gate.sh"
 
     - name: Sign compliance report (provenance attestation)
