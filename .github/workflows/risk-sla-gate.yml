@@ -77,7 +77,11 @@ jobs:
           sla-medium: "60"
           sla-low: "90"
           upload-report: "true"
-          report-retention-days: "365"
+          # Kept at the repository's default 90-day artifact retention cap.
+          # Requesting more than the repo maximum is silently clamped (and warns),
+          # so raise "Settings → Actions → Artifact and log retention" first if a
+          # longer audit-retention window is required.
+          report-retention-days: "90"
           # Optional AI risk assessment. Off unless dispatched with ai_assess=true.
           # Advisory by default; scheduled/PR runs never call the model.
           ai-assess: ${{ github.event.inputs.ai_assess || 'false' }}
