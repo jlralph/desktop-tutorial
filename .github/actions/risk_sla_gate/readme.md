@@ -13,6 +13,51 @@ In `audit` mode the gate reports violations but never fails the job. In
 `enforce-severities` is over its SLA. Violations in non-enforced severities
 are always reported but never block.
 
+## AI risk assessment (optional)
+
+Set `ai-assess: "true"` to also have an AI model (via
+[GitHub Models](https://docs.github.com/github-models)) weigh the open
+Dependabot alerts and emit an overall release-risk verdict. Unlike the
+deterministic SLA gate, the model reasons holistically over the findings — and
+crucially it receives **each alert's SLA status** (`age_days`, `sla_days`,
+`days_over_sla`, `in_violation`), so an item badly past its remediation SLA is
+treated as an escalating factor. Findings are also enriched with the
+[CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
+catalog, so confirmed in-the-wild exploited CVEs are weighted heavily. The KEV
+catalog is cached once per day across runs.
+
+The AI verdict is **advisory by default** — it is always written to the step
+summary, the compliance report (under an `ai_assessment` section), and the
+`ai-*` / `kev-matched` outputs, but never blocks. Set `ai-fail-on` to a severity
+**threshold** (e.g. `high` fails on high and critical) to let the verdict fail
+the job. This gate is independent of `mode`/`enforce-severities`: if either the
+SLA enforcement or the AI threshold trips, the job fails.
+
+The exact prompts sent and the raw model response are logged (collapsed) in the
+workflow run for auditability; they contain only public alert metadata and
+config inputs — no tokens or secrets.
+
+When `ai-assess` is `false` (the default) no model is called and behavior is
+unchanged.
+
+### Additional inputs (AI)
+
+| Input | Default | Purpose |
+|---|---|---|
+| `ai-assess` | `false` | Enable the AI assessment. |
+| `models-token` | `${{ github.token }}` | Token for the GitHub Models API (needs `models: read`). Pass the workflow `GITHUB_TOKEN` — the Dependabot PAT usually lacks this scope. |
+| `ai-model` | `openai/gpt-4.1` | Model id in `{publisher}/{model}` form. |
+| `deployment-environment` | `production - public internet-facing` | Environment/exposure to calibrate the verdict. |
+| `app-context` | *(public web app)* | Free-text description of what is being released. |
+| `mitigations` | *(empty)* | Compensating controls (WAF, CDN, network isolation, …). |
+| `ai-fail-on` | *(empty)* | Severity threshold at/above which the job fails; empty = advisory only. |
+| `max-alerts` | `75` | Max alerts sent to the model (highest-priority first). |
+
+### Additional outputs (AI)
+
+`ai-result`, `ai-risk-level`, `ai-recommendation`, `ai-summary`, `kev-matched`
+(all empty when `ai-assess` is disabled).
+
 ## Report signing (audit authenticity)
 
 When `attest-report` is `true` (the default), the action generates signed
@@ -65,6 +110,7 @@ permissions:
   contents: read
   id-token: write      # mint OIDC token for keyless report signing
   attestations: write  # persist the signed provenance attestation
+  models: read         # only needed when ai-assess is true
 
 jobs:
   risk-sla-gate:
@@ -84,4 +130,9 @@ jobs:
           sla-low: "90"
           upload-report: "true"
           report-retention-days: "365"  # align with your audit retention policy
+          # --- Optional AI risk assessment (SLA- and KEV-aware) ---
+          ai-assess: "true"
+          models-token: ${{ github.token }}   # needs 'models: read'
+          deployment-environment: "production - public internet-facing"
+          ai-fail-on: ""                # empty = advisory; e.g. 'high' to block
 ```
