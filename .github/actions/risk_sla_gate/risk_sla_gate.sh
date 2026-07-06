@@ -604,6 +604,28 @@ if [[ "$AI_ASSESS" == "true" ]]; then
       echo ""
       echo "_Note: ${AI_TRUNC} alert(s) were omitted from the model prompt to stay within the \`max-alerts\` cap (${MAX_ALERTS}) and the model's input-token limit; the SLA tables above are complete._"
     fi
+    # Record the exact prompt sent to the model in the summary for auditability.
+    # Only present when a model call actually happened (the zero-alert path builds
+    # no prompt). Collapsed so it does not crowd out the verdict; contains only
+    # public alert metadata and config inputs — no tokens/secrets.
+    if [[ -n "${SYSTEM_PROMPT:-}" ]]; then
+      echo ""
+      echo "<details><summary>🧾 Model prompt sent to <code>${AI_MODEL_USED}</code> (system + user)</summary>"
+      echo ""
+      echo "**System prompt**"
+      echo ""
+      echo '```text'
+      echo "$SYSTEM_PROMPT"
+      echo '```'
+      echo ""
+      echo "**User prompt** (resolved input values)"
+      echo ""
+      echo '```text'
+      echo "$USER_PROMPT"
+      echo '```'
+      echo ""
+      echo "</details>"
+    fi
   } >> "$GITHUB_STEP_SUMMARY"
 
   # --- AI outputs ------------------------------------------------------------
