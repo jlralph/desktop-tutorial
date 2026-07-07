@@ -19,14 +19,20 @@ inputs:
     required: false
     default: ${{ github.repository }}
   mode:
-    description: "'enforce' (fail the job on SLA violations) or 'audit' (report only)."
+    description: >-
+      'enforce' (fail the job on SLA violations) or 'audit' (report only). Note:
+      when 'ai-assess' is true the deterministic SLA check is always audit-only
+      and never fails the job on its own — enforcement is delegated to the AI
+      verdict ('ai-fail-on'), which still requires mode 'enforce' to block.
     required: false
     default: "audit"
   enforce-severities:
     description: >-
       Comma-separated severities that cause failure when mode is 'enforce'
       (e.g. 'critical,high'). Violations of other severities are still
-      reported but never fail the gate.
+      reported but never fail the gate. Ignored for enforcement when
+      'ai-assess' is true (the SLA check is audit-only in that case); the AI
+      verdict drives blocking instead.
     required: false
     default: "critical,high"
   sla-critical:
@@ -66,10 +72,14 @@ inputs:
     description: >-
       Also ask an AI model (via GitHub Models) to weigh the open Dependabot
       alerts together with their SLA status (age, SLA, days over) and CISA KEV
-      known-exploited data, and emit an overall release-risk verdict. The AI
-      assessment is advisory by default and remains report-only in 'audit'
-      mode; when mode is 'enforce', set 'ai-fail-on' to let it block. When
-      'false' (default) no model is called and behavior is unchanged.
+      known-exploited data, and emit an overall release-risk verdict. Enabling
+      this also changes enforcement: the deterministic SLA check becomes
+      audit-only (a raw SLA violation never fails the job on its own) and
+      blocking is delegated to the AI verdict — which already accounts for SLA
+      status. The AI assessment is advisory by default and remains report-only
+      in 'audit' mode; when mode is 'enforce', set 'ai-fail-on' to let it block.
+      When 'false' (default) no model is called and behavior is unchanged (the
+      SLA gate enforces per 'mode').
     required: false
     default: "false"
   models-token:
@@ -114,9 +124,11 @@ inputs:
       THRESHOLD (e.g. 'high' fails on high and critical). Leave empty (default)
       for advisory-only behavior — the verdict is always reported and, in
       'audit' mode, never blocks. In 'enforce' mode, the AI verdict can fail
-      the job when it reaches the threshold. Independent of
-      'mode'/'enforce-severities' (the deterministic SLA gate); if either gate
-      trips, the job fails. Valid: critical, high, medium, low, minimal.
+      the job when it reaches the threshold. Only used when 'ai-assess' is true;
+      when AI augmentation is enabled this is the sole enforcement control (the
+      deterministic SLA check is audit-only), so it is the AI verdict — not the
+      raw SLA violation count or 'enforce-severities' — that blocks the job.
+      Valid: critical, high, medium, low, minimal.
     required: false
     default: ""
   max-alerts:
@@ -131,7 +143,11 @@ inputs:
 
 outputs:
   result:
-    description: "'pass', 'fail', or 'informational'."
+    description: >-
+      Deterministic SLA gate result: 'pass', 'fail', or 'informational'. Always
+      'informational' in 'audit' mode and whenever 'ai-assess' is true (the SLA
+      check is audit-only when AI augmentation is enabled — see 'ai-result' for
+      the enforcing verdict in that case).
     value: ${{ steps.gate.outputs.result }}
   violation-count:
     description: "Total number of open alerts over their SLA."

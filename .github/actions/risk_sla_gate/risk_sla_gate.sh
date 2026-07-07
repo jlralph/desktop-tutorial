@@ -141,7 +141,11 @@ VIOLATION_COUNT=$(jq 'length' <<< "$VIOLATIONS")
 ENFORCED_COUNT=$(jq --argjson e "$ENFORCE_JSON" \
   '[ .[] | select(.severity as $s | $e | index($s)) ] | length' <<< "$VIOLATIONS")
 
-if [[ "$MODE" == "audit" ]]; then
+# The deterministic SLA gate only ever fails the job on its own when AI
+# augmentation is OFF. When AI_ASSESS=true the SLA portion is downgraded to
+# audit (report-only) and enforcement is delegated to the AI verdict, so the
+# SLA result is informational regardless of mode.
+if [[ "$MODE" == "audit" || "$AI_ASSESS" == "true" ]]; then
   RESULT="informational"
 elif [[ "$ENFORCED_COUNT" -gt 0 ]]; then
   RESULT="fail"
@@ -234,7 +238,11 @@ echo "Compliance report written to ${REPORT_PATH}"
   case "$RESULT" in
     pass)          echo "**Result: ✅ PASS** — no SLA violations in enforced severities." ;;
     fail)          echo "**Result: ❌ FAIL** — ${ENFORCED_COUNT} violation(s) in enforced severities. The gate is blocking this commit." ;;
-    informational) echo "**Result: ℹ️ INFORMATIONAL** — gate is in audit mode; ${VIOLATION_COUNT} violation(s) reported, none blocking." ;;
+    informational) if [[ "$MODE" != "audit" && "$AI_ASSESS" == "true" ]]; then
+                     echo "**Result: ℹ️ INFORMATIONAL** — AI augmentation is enabled, so the SLA check is audit-only (${VIOLATION_COUNT} violation(s) reported); enforcement is delegated to the AI assessment below."
+                   else
+                     echo "**Result: ℹ️ INFORMATIONAL** — gate is in audit mode; ${VIOLATION_COUNT} violation(s) reported, none blocking."
+                   fi ;;
   esac
 } >> "$GITHUB_STEP_SUMMARY"
 
@@ -252,10 +260,12 @@ echo "Result: ${RESULT} | open=${TOTAL_OPEN} violations=${VIOLATION_COUNT} enfor
 # --- Optional AI risk assessment ---------------------------------------------
 # When enabled, ask a GitHub Models LLM to weigh the open alerts together with
 # their SLA status (age, SLA, days over) and CISA KEV known-exploited data, and
-# emit an overall risk verdict. This layers on top of the deterministic SLA gate;
-# it never changes the SLA `result`, but can independently fail the job when the
-# verdict meets the `ai-fail-on` threshold. AI_ENFORCE_FAIL records that outcome so
-# the combined enforcement at the end honors both gates.
+# emit an overall risk verdict. Enabling AI augmentation also downgrades the
+# deterministic SLA gate to audit-only (see the RESULT computation above): the
+# raw SLA count no longer fails the job, and enforcement is delegated to this AI
+# verdict, which already folds SLA status, KEV, and severity into its decision.
+# The verdict fails the job when it meets the `ai-fail-on` threshold (still only
+# in `enforce` mode). AI_ENFORCE_FAIL records that outcome for the final gate.
 AI_ENFORCE_FAIL=0
 if [[ "$AI_ASSESS" == "true" ]]; then
   echo "AI risk assessment enabled; weighing open alerts (with SLA status) via GitHub Models (${AI_MODEL})..."
@@ -648,11 +658,14 @@ if [[ "$AI_ASSESS" == "true" ]]; then
 fi
 
 # --- Enforcement --------------------------------------------------------------
-# Two independent gates can each fail the job: the deterministic SLA enforcement
-# and the optional AI verdict. Both are reported above regardless; here we fail if
-# either fired so no blocking condition is silently dropped.
+# What can fail the job depends on whether AI augmentation is enabled:
+#   * AI OFF (AI_ASSESS!=true): the deterministic SLA gate enforces — a violation
+#     in an enforced severity fails the job in `enforce` mode.
+#   * AI ON (AI_ASSESS==true): the SLA gate is audit-only and never fails the job
+#     on its own; enforcement is delegated to the AI verdict (ai-fail-on), which
+#     already accounts for SLA status. Either way both results are reported above.
 SLA_ENFORCE_FAIL=0
-if [[ "$MODE" == "enforce" && "$ENFORCED_COUNT" -gt 0 ]]; then
+if [[ "$AI_ASSESS" != "true" && "$MODE" == "enforce" && "$ENFORCED_COUNT" -gt 0 ]]; then
   SLA_ENFORCE_FAIL=1
   echo "::error::Risk SLA Gate failed: ${ENFORCED_COUNT} Dependabot alert(s) in enforced severities ($(jq -r 'join(", ")' <<< "$ENFORCE_JSON")) exceed their remediation SLA. See the job summary and compliance report for details."
 fi

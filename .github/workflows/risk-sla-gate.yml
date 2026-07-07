@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "'enforce' (fail on SLA violations) or 'audit' (report only)."
+        description: "'enforce' or 'audit' (report only). With ai_assess=true the SLA check is always audit-only; enforce delegates blocking to the AI verdict."
         required: false
         default: "audit"
         type: choice
@@ -15,12 +15,12 @@ on:
           - audit
           - enforce
       ai_assess:
-        description: "Also run the AI risk assessment (SLA- and KEV-aware verdict)."
+        description: "Also run the AI risk assessment (SLA- and KEV-aware verdict). When on, the SLA check is audit-only and the AI verdict drives enforcement."
         required: false
         default: false
         type: boolean
       ai_fail_on:
-        description: "AI risk threshold that fails the job (empty = advisory only)."
+        description: "AI risk threshold that fails the job (empty = advisory only). Used with ai_assess=true + mode=enforce to block on the AI verdict."
         required: false
         default: ""
         type: choice
@@ -69,8 +69,13 @@ jobs:
           # installation token via this secret.
           github-token: ${{ secrets.DEPENDABOT_ALERTS_TOKEN }}
           # Default to 'audit' so scheduled/PR runs never block; allow an
-          # operator to dispatch an enforcing run via workflow_dispatch.
+          # operator to dispatch an enforcing run via workflow_dispatch. When
+          # ai-assess is true the SLA check is audit-only regardless of mode and
+          # enforcement is delegated to the AI verdict (see ai-fail-on below).
           mode: ${{ github.event.inputs.mode || 'audit' }}
+          # Only applied when ai-assess is false; with AI augmentation on, the
+          # SLA check never fails the job on its own so these severities are
+          # reported but not enforced.
           enforce-severities: "critical,high"
           sla-critical: "7"
           sla-high: "30"
@@ -83,11 +88,16 @@ jobs:
           # longer audit-retention window is required.
           report-retention-days: "90"
           # Optional AI risk assessment. Off unless dispatched with ai_assess=true.
-          # Advisory by default; scheduled/PR runs never call the model.
+          # Advisory by default; scheduled/PR runs never call the model. When on,
+          # the SLA check is audit-only and the AI verdict (below) is what can
+          # block, so failure is aligned with the AI augmentation, not raw SLA
+          # violations.
           ai-assess: ${{ github.event.inputs.ai_assess || 'false' }}
           # The Dependabot PAT typically lacks 'models: read'; use the workflow
           # token for the GitHub Models inference call.
           models-token: ${{ github.token }}
+          # The enforcement control when ai-assess is true: with mode=enforce, the
+          # job fails when the AI verdict meets this threshold. Empty = advisory.
           ai-fail-on: ${{ github.event.inputs.ai_fail_on || '' }}
           deployment-environment: "production - public internet-facing"
 

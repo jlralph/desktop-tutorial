@@ -13,6 +13,12 @@ In `audit` mode the gate reports violations but never fails the job. In
 `enforce-severities` is over its SLA. Violations in non-enforced severities
 are always reported but never block.
 
+This deterministic SLA enforcement applies only when AI augmentation is **off**.
+When `ai-assess` is `true` the SLA check is downgraded to audit-only — a raw SLA
+violation never fails the job on its own — and enforcement is delegated to the
+AI verdict (see [AI risk assessment](#ai-risk-assessment-optional) below), which
+already folds each alert's SLA status into its decision.
+
 ## Core inputs
 
 | Input | Default | Purpose |
@@ -49,15 +55,21 @@ treated as an escalating factor. Findings are also enriched with the
 catalog, so confirmed in-the-wild exploited CVEs are weighted heavily. The KEV
 catalog is cached once per day across runs.
 
+Enabling the AI assessment also **changes what enforces the gate**. The
+deterministic SLA check becomes audit-only — its violations are still reported
+(and drive the AI's reasoning) but never fail the job on their own. Enforcement
+is instead aligned with the AI augmentation: the job fails only on the AI
+verdict.
+
 The AI verdict is **advisory by default** — it is always written to the step
 summary, the compliance report (under an `ai_assessment` section), and the
 `ai-*` / `kev-matched` outputs, but never blocks. To let the verdict fail the
 job you need **both** `mode: enforce` **and** `ai-fail-on` set to a severity
-**threshold** (e.g. `high` fails on high and critical). Like the deterministic
-SLA gate, the AI assessment is report-only in `audit` mode — it always runs and
-records its verdict, but never blocks. The two gates are otherwise independent
-(the AI threshold is separate from `enforce-severities`): in `enforce` mode, if
-either the SLA enforcement or the AI threshold trips, the job fails.
+**threshold** (e.g. `high` fails on high and critical). In `audit` mode the AI
+assessment is report-only — it always runs and records its verdict, but never
+blocks. Because the SLA check is audit-only whenever AI augmentation is on,
+`ai-fail-on` (not `enforce-severities` or the raw violation count) is the sole
+control that can block the job.
 
 The exact prompts sent and the raw model response are logged (collapsed) in the
 workflow run for auditability; they contain only public alert metadata and
