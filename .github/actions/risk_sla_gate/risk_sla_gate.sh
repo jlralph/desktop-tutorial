@@ -11,13 +11,21 @@ set -euo pipefail
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${REPOSITORY:?REPOSITORY is required}"
 MODE="${MODE:-audit}"
-ENFORCE_SEVERITIES="${ENFORCE_SEVERITIES:-critical,high}"
+# Single severity threshold that governs BOTH gates and the alert filter:
+#   * only alerts at this severity OR HIGHER are evaluated, reported, and sent to
+#     the AI (everything below is filtered out entirely),
+#   * the deterministic SLA gate enforces on those in-scope severities, and
+#   * the AI verdict fail-on level is set to this same threshold.
+# Empty (default) means no threshold: all severities are in scope and, in
+# 'enforce' mode with AI off, any SLA violation can fail the job.
+SEVERITY_THRESHOLD="${SEVERITY_THRESHOLD:-}"
 REPORT_PATH="risk-sla-gate-report-${GITHUB_SHA}.json"
 
 # --- Optional AI risk assessment ---------------------------------------------
 # When AI_ASSESS=true, after the deterministic SLA evaluation the gate also asks a
 # GitHub Models LLM to weigh the open alerts — with their SLA status included — and
-# emit an overall risk verdict. Advisory by default; AI_FAIL_ON can make it block.
+# emit an overall risk verdict. Advisory by default; a chosen SEVERITY_THRESHOLD
+# (which also becomes the AI fail-on level) can make it block.
 AI_ASSESS="${AI_ASSESS:-false}"
 # Token used for the GitHub Models inference API (needs 'models: read'). The
 # Dependabot PAT in GH_TOKEN usually lacks that scope, so this defaults to it only
@@ -28,9 +36,10 @@ DEPLOYMENT_ENVIRONMENT="${DEPLOYMENT_ENVIRONMENT:-production - public internet-f
 APP_CONTEXT="${APP_CONTEXT:-A build being released to a public-facing, internet-exposed website.}"
 # Compensating controls (WAF, load balancer, etc.) selected for this run, if any.
 MITIGATIONS="${MITIGATIONS:-}"
-AI_FAIL_ON="${AI_FAIL_ON:-}"
 MAX_ALERTS="${MAX_ALERTS:-75}"
-AI_VALID_LEVELS="critical high medium low minimal"
+# Valid vulnerability severities for the threshold, ranked most→least severe.
+VALID_SEVERITIES="critical high medium low"
+SEV_RANK='{"critical":0,"high":1,"medium":2,"low":3}'
 
 # --- Validate inputs --------------------------------------------------------
 if [[ "$MODE" != "enforce" && "$MODE" != "audit" ]]; then
@@ -45,17 +54,32 @@ for var in SLA_CRITICAL SLA_HIGH SLA_MEDIUM SLA_LOW; do
   fi
 done
 
-# Normalize + validate the AI fail-on threshold list (only meaningful when AI is
-# enabled, but validated unconditionally so a typo surfaces early).
+# Normalize + validate the single severity threshold.
+SEVERITY_THRESHOLD=$(printf '%s' "$SEVERITY_THRESHOLD" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+if [[ -n "$SEVERITY_THRESHOLD" ]] && ! grep -qw "$SEVERITY_THRESHOLD" <<< "$VALID_SEVERITIES"; then
+  echo "::error::Input 'severity-threshold' must be one of: ${VALID_SEVERITIES// /, } (or empty for all severities). Got '${SEVERITY_THRESHOLD}'."
+  exit 1
+fi
+
+# Rank of the threshold (lower rank = more severe). An empty threshold maps to
+# rank 3 (low) so that every severity is in scope and nothing is filtered out.
+if [[ -n "$SEVERITY_THRESHOLD" ]]; then
+  THRESHOLD_RANK=$(jq -nr --argjson r "$SEV_RANK" --arg s "$SEVERITY_THRESHOLD" '$r[$s]')
+else
+  THRESHOLD_RANK=3
+fi
+# Severities in scope (threshold and above), most-severe-first. Drives the alert
+# filter, the SLA policy table, and the report's policy section.
+IN_SCOPE_JSON=$(jq -nc --argjson r "$SEV_RANK" --argjson t "$THRESHOLD_RANK" \
+  '$r | to_entries | map(select(.value <= $t)) | sort_by(.value) | map(.key)')
+# Human-readable in-scope list (e.g. "critical, high") reused in summaries/prompts.
+SCOPE_LABEL=$(jq -r 'join(", ")' <<< "$IN_SCOPE_JSON")
+
+# The chosen severity threshold is ALSO the AI verdict fail-on level, so one knob
+# governs both gates. An empty threshold leaves the AI assessment advisory.
+AI_FAIL_ON="$SEVERITY_THRESHOLD"
 AI_FAIL_ON_JSON=$(jq -nc --arg s "$AI_FAIL_ON" \
   '$s | ascii_downcase | split(",") | map(gsub("\\s+"; "")) | map(select(length > 0)) | unique')
-while read -r lvl; do
-  [[ -z "$lvl" ]] && continue
-  if ! grep -qw "$lvl" <<< "$AI_VALID_LEVELS"; then
-    echo "::error::Input 'ai-fail-on' contains invalid risk level '${lvl}'. Valid: ${AI_VALID_LEVELS// /, }."
-    exit 1
-  fi
-done < <(jq -r '.[]' <<< "$AI_FAIL_ON_JSON")
 
 if [[ "$AI_ASSESS" == "true" ]]; then
   if ! [[ "$MAX_ALERTS" =~ ^[0-9]+$ ]]; then
@@ -69,9 +93,6 @@ SLAS=$(jq -nc \
   --argjson c "$SLA_CRITICAL" --argjson h "$SLA_HIGH" \
   --argjson m "$SLA_MEDIUM" --argjson l "$SLA_LOW" \
   '{critical: $c, high: $h, medium: $m, low: $l}')
-
-ENFORCE_JSON=$(jq -nc --arg s "$ENFORCE_SEVERITIES" \
-  '$s | ascii_downcase | split(",") | map(gsub("\\s+"; "")) | map(select(length > 0))')
 
 # --- Query open Dependabot alerts -------------------------------------------
 echo "Querying open Dependabot alerts for ${REPOSITORY} (commit ${GITHUB_SHA})..."
@@ -88,7 +109,7 @@ ALERTS=$(jq -s 'add // []' <<< "$RAW")
 NOW_EPOCH=$(date -u +%s)
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-EVALUATED=$(jq -c \
+EVALUATED_ALL=$(jq -c \
   --argjson now "$NOW_EPOCH" \
   --argjson slas "$SLAS" \
   --arg ws "${GITHUB_WORKSPACE:-}" '
@@ -135,11 +156,25 @@ EVALUATED=$(jq -c \
   | map(min_by(.alert_number))
   | sort_by([(rank[.severity] // 4), -(.days_over_sla)])' <<< "$ALERTS")
 
-VIOLATIONS=$(jq -c '[ .[] | select(.in_violation) ]' <<< "$EVALUATED")
+# Apply the severity threshold: drop every alert below the threshold so the
+# filtered set flows into the counts, the compliance report, the step summary,
+# and the AI assessment alike. With an empty threshold (rank 3) nothing is
+# dropped. FILTERED_OUT is surfaced so the exclusion is never silent.
+EVALUATED=$(jq -c --argjson tr "$THRESHOLD_RANK" --argjson rank "$SEV_RANK" \
+  '[ .[] | select((.severity | $rank[.] // 4) <= $tr) ]' <<< "$EVALUATED_ALL")
+TOTAL_ALL=$(jq 'length' <<< "$EVALUATED_ALL")
 TOTAL_OPEN=$(jq 'length' <<< "$EVALUATED")
+FILTERED_OUT=$(( TOTAL_ALL - TOTAL_OPEN ))
+if [[ "$FILTERED_OUT" -gt 0 ]]; then
+  echo "Severity threshold '${SEVERITY_THRESHOLD}': filtered out ${FILTERED_OUT} open alert(s) below the threshold; evaluating ${TOTAL_OPEN} of ${TOTAL_ALL}."
+fi
+
+VIOLATIONS=$(jq -c '[ .[] | select(.in_violation) ]' <<< "$EVALUATED")
 VIOLATION_COUNT=$(jq 'length' <<< "$VIOLATIONS")
-ENFORCED_COUNT=$(jq --argjson e "$ENFORCE_JSON" \
-  '[ .[] | select(.severity as $s | $e | index($s)) ] | length' <<< "$VIOLATIONS")
+# Every alert that survives the filter is at or above the threshold, so the
+# in-scope severities are exactly what remains: enforced violations == all
+# violations. The distinct name is kept for output/report backward-compatibility.
+ENFORCED_COUNT="$VIOLATION_COUNT"
 
 # The deterministic SLA gate only ever fails the job on its own when AI
 # augmentation is OFF. When AI_ASSESS=true the SLA portion is downgraded to
@@ -166,9 +201,12 @@ jq -n \
   --arg evaluated_at "$NOW_ISO" \
   --arg mode "$MODE" \
   --arg result "$RESULT" \
+  --arg severity_threshold "${SEVERITY_THRESHOLD:-}" \
   --argjson slas "$SLAS" \
-  --argjson enforce "$ENFORCE_JSON" \
+  --argjson in_scope "$IN_SCOPE_JSON" \
   --argjson total "$TOTAL_OPEN" \
+  --argjson total_all "$TOTAL_ALL" \
+  --argjson filtered_out "$FILTERED_OUT" \
   --argjson violations_count "$VIOLATION_COUNT" \
   --argjson enforced_count "$ENFORCED_COUNT" \
   --argjson alerts "$EVALUATED" \
@@ -187,11 +225,14 @@ jq -n \
     policy: {
       mode: $mode,
       sla_days: $slas,
-      enforced_severities: $enforce
+      severity_threshold: (if $severity_threshold == "" then null else $severity_threshold end),
+      in_scope_severities: $in_scope
     },
     summary: {
       result: $result,
       open_alerts: $total,
+      open_alerts_all_severities: $total_all,
+      filtered_below_threshold: $filtered_out,
       sla_violations: $violations_count,
       enforced_violations: $enforced_count
     },
@@ -212,15 +253,21 @@ echo "Compliance report written to ${REPORT_PATH}"
   echo "| Workflow run | [${GITHUB_RUN_ID:-n/a} (attempt ${GITHUB_RUN_ATTEMPT:-1})](${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-$REPOSITORY}/actions/runs/${GITHUB_RUN_ID:-0}) |"
   echo "| Evaluated at | ${NOW_ISO} |"
   echo "| Mode | \`${MODE}\` |"
-  echo "| Enforced severities | \`$(jq -r 'join(", ")' <<< "$ENFORCE_JSON")\` |"
+  echo "| Severity threshold | \`${SEVERITY_THRESHOLD:-none (all severities)}\` |"
+  echo "| In-scope severities | \`${SCOPE_LABEL}\` |"
+  if [[ "$FILTERED_OUT" -gt 0 ]]; then
+    echo "| Filtered out (below threshold) | ${FILTERED_OUT} of ${TOTAL_ALL} open alert(s) |"
+  fi
   echo ""
   echo "### SLA Policy (days from CVE published date)"
   echo ""
   echo "| Severity | SLA (days) | Open Alerts | Over SLA |"
   echo "|---|---:|---:|---:|"
-  jq -r --argjson slas "$SLAS" '
+  # Only the in-scope severities are shown; anything below the threshold has been
+  # filtered out of the evaluated set entirely.
+  jq -r --argjson slas "$SLAS" --argjson scope "$IN_SCOPE_JSON" '
     . as $a
-    | ("critical", "high", "medium", "low")
+    | $scope[]
     | . as $s
     | "| \($s) | \($slas[$s]) | \([$a[] | select(.severity == $s)] | length) | \([$a[] | select(.severity == $s and .in_violation)] | length) |"
   ' <<< "$EVALUATED"
@@ -236,8 +283,8 @@ echo "Compliance report written to ${REPORT_PATH}"
   fi
   echo ""
   case "$RESULT" in
-    pass)          echo "**Result: ✅ PASS** — no SLA violations in enforced severities." ;;
-    fail)          echo "**Result: ❌ FAIL** — ${ENFORCED_COUNT} violation(s) in enforced severities. The gate is blocking this commit." ;;
+    pass)          echo "**Result: ✅ PASS** — no SLA violations in in-scope severities (${SCOPE_LABEL})." ;;
+    fail)          echo "**Result: ❌ FAIL** — ${ENFORCED_COUNT} violation(s) in in-scope severities (${SCOPE_LABEL}). The gate is blocking this commit." ;;
     informational) if [[ "$MODE" != "audit" && "$AI_ASSESS" == "true" ]]; then
                      echo "**Result: ℹ️ INFORMATIONAL** — AI augmentation is enabled, so the SLA check is audit-only (${VIOLATION_COUNT} violation(s) reported); enforcement is delegated to the AI assessment below."
                    else
@@ -264,8 +311,8 @@ echo "Result: ${RESULT} | open=${TOTAL_OPEN} violations=${VIOLATION_COUNT} enfor
 # deterministic SLA gate to audit-only (see the RESULT computation above): the
 # raw SLA count no longer fails the job, and enforcement is delegated to this AI
 # verdict, which already folds SLA status, KEV, and severity into its decision.
-# The verdict fails the job when it meets the `ai-fail-on` threshold (still only
-# in `enforce` mode). AI_ENFORCE_FAIL records that outcome for the final gate.
+# The verdict fails the job when it meets the `severity-threshold` (still only in
+# `enforce` mode). AI_ENFORCE_FAIL records that outcome for the final gate.
 AI_ENFORCE_FAIL=0
 if [[ "$AI_ASSESS" == "true" ]]; then
   echo "AI risk assessment enabled; weighing open alerts (with SLA status) via GitHub Models (${AI_MODEL})..."
@@ -393,12 +440,14 @@ if [[ "$AI_ASSESS" == "true" ]]; then
         --arg repo "$REPOSITORY" \
         --arg sha "${GITHUB_SHA:-n/a}" \
         --arg mode "$MODE" \
+        --arg threshold "${SEVERITY_THRESHOLD:-}" \
+        --arg scope_label "$SCOPE_LABEL" \
         --argjson alerts "$AI_SENT" \
         --argjson total "$TOTAL_OPEN" \
+        --argjson filtered "$FILTERED_OUT" \
         --argjson trunc "$AI_TRUNC" \
         --argjson slas "$SLAS" \
         --argjson violations "$VIOLATION_COUNT" \
-        --argjson enforced "$ENFORCED_COUNT" \
         --argjson kev_size "$KEV_CATALOG_SIZE" \
         --argjson kev_matched "$KEV_MATCHED" \
         --arg mitig "$MITIGATIONS_TEXT" \
@@ -407,8 +456,10 @@ if [[ "$AI_ASSESS" == "true" ]]; then
          "Compensating controls already in place: \($mitig)\n" +
          "Repository: \($repo)\nCommit: \($sha)\nSLA gate mode: \($mode)\n\n" +
          "Remediation SLA policy (days from CVE published date): critical=\($slas.critical), high=\($slas.high), medium=\($slas.medium), low=\($slas.low).\n" +
-         "Open Dependabot alerts: \($total) (showing \($alerts | length), \($trunc) omitted for brevity).\n" +
-         "Alerts over their SLA: \($violations) total, \($enforced) in enforced severities.\n" +
+         (if $threshold == "" then "Severity scope: all severities are in scope (no threshold set).\n"
+          else "Severity threshold: \($threshold) — only \($scope_label) are in scope; \($filtered) lower-severity alert(s) were filtered out and are NOT shown below.\n" end) +
+         "Open Dependabot alerts (in scope): \($total) (showing \($alerts | length), \($trunc) omitted for brevity).\n" +
+         "Alerts over their SLA: \($violations) (all within the in-scope severities).\n" +
          "CISA KEV catalog: \($kev_size) entries loaded; \($kev_matched) distinct CVE(s) across the open alerts match the KEV catalog (actively exploited in the wild). Findings are annotated with \"known_exploited\" and a \"kev\" object when matched.\n\n" +
          "Dependabot findings with SLA status (JSON):\n" + ($alerts | tojson) + "\n\n" +
          "Assess the OVERALL risk of releasing this build to the environment described above. Give decisive weight to any KEV-listed (known_exploited) vulnerability and to findings badly past their remediation SLA (large days_over_sla). Return your verdict per the required schema. In key_risks, list ALL release-relevant issues a reviewer should weigh — not only KEV-matched or SLA-breached ones. Order key_risks by importance (KEV-listed, critical, and most-over-SLA first), set source to \"dependabot\", and call out KEV/known-exploited status and SLA breach (days_over_sla) in why_it_matters when applicable. In recommended_mitigations, give concrete, prioritized actions, remediating known-exploited and SLA-breached vulnerabilities first."')
@@ -612,10 +663,10 @@ if [[ "$AI_ASSESS" == "true" ]]; then
       advisory) if [[ "$MODE" == "audit" ]]; then
                    echo "**AI result: ℹ️ ADVISORY** — audit mode is active, so the AI assessment is reported only and never blocks the pipeline."
                  else
-                   echo "**AI result: ℹ️ ADVISORY** — reporting only; no \`ai-fail-on\` threshold is set, so this never blocks."
+                   echo "**AI result: ℹ️ ADVISORY** — reporting only; no \`severity-threshold\` is set, so this never blocks."
                  fi ;;
-      pass)     echo "**AI result: ✅ PASS** — AI risk level \`${AI_RISK_LEVEL}\` is below the \`ai-fail-on\` threshold (\`${AI_THRESHOLD_LEVEL}\` and above)." ;;
-      fail)     echo "**AI result: ❌ FAIL** — AI risk level \`${AI_RISK_LEVEL}\` is at or above the \`ai-fail-on\` threshold (\`${AI_THRESHOLD_LEVEL}\` and above). Blocking this release." ;;
+      pass)     echo "**AI result: ✅ PASS** — AI risk level \`${AI_RISK_LEVEL}\` is below the \`severity-threshold\` (\`${AI_THRESHOLD_LEVEL}\` and above)." ;;
+      fail)     echo "**AI result: ❌ FAIL** — AI risk level \`${AI_RISK_LEVEL}\` is at or above the \`severity-threshold\` (\`${AI_THRESHOLD_LEVEL}\` and above). Blocking this release." ;;
     esac
     if [[ "$AI_TRUNC" -gt 0 ]]; then
       echo ""
@@ -658,19 +709,20 @@ if [[ "$AI_ASSESS" == "true" ]]; then
 fi
 
 # --- Enforcement --------------------------------------------------------------
-# What can fail the job depends on whether AI augmentation is enabled:
-#   * AI OFF (AI_ASSESS!=true): the deterministic SLA gate enforces — a violation
-#     in an enforced severity fails the job in `enforce` mode.
+# The chosen severity-threshold governs both gates; what can fail the job depends
+# on whether AI augmentation is enabled:
+#   * AI OFF (AI_ASSESS!=true): the deterministic SLA gate enforces — any in-scope
+#     alert (at/above the threshold) over its SLA fails the job in `enforce` mode.
 #   * AI ON (AI_ASSESS==true): the SLA gate is audit-only and never fails the job
-#     on its own; enforcement is delegated to the AI verdict (ai-fail-on), which
-#     already accounts for SLA status. Either way both results are reported above.
+#     on its own; enforcement is delegated to the AI verdict, whose fail-on level
+#     is the same severity-threshold. Either way both results are reported above.
 SLA_ENFORCE_FAIL=0
 if [[ "$AI_ASSESS" != "true" && "$MODE" == "enforce" && "$ENFORCED_COUNT" -gt 0 ]]; then
   SLA_ENFORCE_FAIL=1
-  echo "::error::Risk SLA Gate failed: ${ENFORCED_COUNT} Dependabot alert(s) in enforced severities ($(jq -r 'join(", ")' <<< "$ENFORCE_JSON")) exceed their remediation SLA. See the job summary and compliance report for details."
+  echo "::error::Risk SLA Gate failed: ${ENFORCED_COUNT} in-scope Dependabot alert(s) (${SCOPE_LABEL}) exceed their remediation SLA. See the job summary and compliance report for details."
 fi
 if [[ "$MODE" != "audit" && "$AI_ENFORCE_FAIL" -eq 1 ]]; then
-  echo "::error::Risk SLA Gate AI assessment failed: assessed risk level '${AI_RISK_LEVEL}' meets the 'ai-fail-on' threshold. See the job summary and compliance report for details."
+  echo "::error::Risk SLA Gate AI assessment failed: assessed risk level '${AI_RISK_LEVEL}' meets the 'severity-threshold'. See the job summary and compliance report for details."
 fi
 if [[ "$SLA_ENFORCE_FAIL" -eq 1 || ( "$MODE" != "audit" && "$AI_ENFORCE_FAIL" -eq 1 ) ]]; then
   exit 1

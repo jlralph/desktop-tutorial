@@ -19,8 +19,8 @@ on:
         required: false
         default: false
         type: boolean
-      ai_fail_on:
-        description: "AI risk threshold that fails the job (empty = advisory only). Used with ai_assess=true + mode=enforce to block on the AI verdict."
+      severity_threshold:
+        description: "Min severity for BOTH gates: only this severity or higher is evaluated/reported/sent to AI; also the AI fail-on level. Empty = all severities."
         required: false
         default: ""
         type: choice
@@ -30,7 +30,6 @@ on:
           - high
           - medium
           - low
-          - minimal
   schedule:
     # Daily at 06:17 UTC. Schedules always run against the default branch.
     - cron: "17 6 * * *"
@@ -71,12 +70,13 @@ jobs:
           # Default to 'audit' so scheduled/PR runs never block; allow an
           # operator to dispatch an enforcing run via workflow_dispatch. When
           # ai-assess is true the SLA check is audit-only regardless of mode and
-          # enforcement is delegated to the AI verdict (see ai-fail-on below).
+          # enforcement is delegated to the AI verdict (see severity-threshold).
           mode: ${{ github.event.inputs.mode || 'audit' }}
-          # Only applied when ai-assess is false; with AI augmentation on, the
-          # SLA check never fails the job on its own so these severities are
-          # reported but not enforced.
-          enforce-severities: "critical,high"
+          # Single severity knob for BOTH gates: only alerts at this severity or
+          # higher are evaluated/reported/sent to the AI (lower ones are filtered
+          # out), the SLA gate enforces on that scope, and it is also the AI
+          # verdict's fail-on level. Empty = all severities (no filter).
+          severity-threshold: ${{ github.event.inputs.severity_threshold || '' }}
           sla-critical: "7"
           sla-high: "30"
           sla-medium: "60"
@@ -96,9 +96,6 @@ jobs:
           # The Dependabot PAT typically lacks 'models: read'; use the workflow
           # token for the GitHub Models inference call.
           models-token: ${{ github.token }}
-          # The enforcement control when ai-assess is true: with mode=enforce, the
-          # job fails when the AI verdict meets this threshold. Empty = advisory.
-          ai-fail-on: ${{ github.event.inputs.ai_fail_on || '' }}
           deployment-environment: "production - public internet-facing"
 
       - name: Echo gate result

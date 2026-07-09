@@ -9,15 +9,29 @@ review can be evidenced during compliance audits.
 ## Modes
 
 In `audit` mode the gate reports violations but never fails the job. In
-`enforce` mode the job fails when any alert in a severity listed in
-`enforce-severities` is over its SLA. Violations in non-enforced severities
-are always reported but never block.
+`enforce` mode the job fails when any **in-scope** alert is over its SLA.
+
+## Severity threshold
+
+A single `severity-threshold` (`critical` / `high` / `medium` / `low`, or empty
+for all severities) governs **both** gates and filters the alert set:
+
+- Only alerts at the threshold **or higher** are evaluated — anything below is
+  filtered out entirely, from the counts, the JSON compliance report, the step
+  summary, and the AI prompt (the number filtered out is always reported so the
+  exclusion is never silent).
+- The deterministic SLA gate enforces on those in-scope severities.
+- The AI verdict's fail-on level is set to this same threshold.
+
+So one knob decides what "counts" and what can fail the job. With the threshold
+empty (default) nothing is filtered, and in `enforce` mode with AI off any SLA
+violation can fail the job.
 
 This deterministic SLA enforcement applies only when AI augmentation is **off**.
 When `ai-assess` is `true` the SLA check is downgraded to audit-only — a raw SLA
 violation never fails the job on its own — and enforcement is delegated to the
-AI verdict (see [AI risk assessment](#ai-risk-assessment-optional) below), which
-already folds each alert's SLA status into its decision.
+AI verdict (see [AI risk assessment](#ai-risk-assessment-optional) below), whose
+fail-on level is the chosen `severity-threshold`.
 
 ## Core inputs
 
@@ -26,7 +40,7 @@ already folds each alert's SLA status into its decision.
 | `github-token` | *(required)* | Token that can read Dependabot alerts (see [Token requirements](#token-requirements)). |
 | `repository` | `${{ github.repository }}` | Repository to audit, in `owner/repo` form. |
 | `mode` | `audit` | `audit` (report only) or `enforce` (fail on SLA violations). |
-| `enforce-severities` | `critical,high` | Severities that fail the job in `enforce` mode. |
+| `severity-threshold` | *(empty)* | Min severity governing both gates and the filter (`critical`/`high`/`medium`/`low`; empty = all). See [Severity threshold](#severity-threshold). |
 | `sla-critical` | `7` | Remediation SLA in days for critical alerts. |
 | `sla-high` | `30` | Remediation SLA in days for high alerts. |
 | `sla-medium` | `60` | Remediation SLA in days for medium alerts. |
@@ -64,12 +78,13 @@ verdict.
 The AI verdict is **advisory by default** — it is always written to the step
 summary, the compliance report (under an `ai_assessment` section), and the
 `ai-*` / `kev-matched` outputs, but never blocks. To let the verdict fail the
-job you need **both** `mode: enforce` **and** `ai-fail-on` set to a severity
-**threshold** (e.g. `high` fails on high and critical). In `audit` mode the AI
-assessment is report-only — it always runs and records its verdict, but never
-blocks. Because the SLA check is audit-only whenever AI augmentation is on,
-`ai-fail-on` (not `enforce-severities` or the raw violation count) is the sole
-control that can block the job.
+job you need **both** `mode: enforce` **and** a `severity-threshold` set (e.g.
+`high` fails when the AI risk verdict is high or critical). In `audit` mode the
+AI assessment is report-only — it always runs and records its verdict, but never
+blocks. Because the SLA check is audit-only whenever AI augmentation is on, the
+`severity-threshold` (not the raw violation count) is the sole control that can
+block the job. Note that the model only ever sees in-scope alerts — anything
+below the threshold is filtered out before the prompt is built.
 
 The exact prompts sent and the raw model response are logged (collapsed) in the
 workflow run for auditability; they contain only public alert metadata and
@@ -88,8 +103,10 @@ unchanged.
 | `deployment-environment` | `production - public internet-facing` | Environment/exposure to calibrate the verdict. |
 | `app-context` | *(public web app)* | Free-text description of what is being released. |
 | `mitigations` | *(empty)* | Compensating controls (WAF, CDN, network isolation, …). |
-| `ai-fail-on` | *(empty)* | Severity threshold at/above which the job fails; empty = advisory only. |
 | `max-alerts` | `75` | Max alerts sent to the model (highest-priority first). |
+
+The blocking threshold is the shared [`severity-threshold`](#severity-threshold)
+input, not an AI-specific one.
 
 ### Additional outputs (AI)
 
@@ -161,7 +178,9 @@ jobs:
         with:
           github-token: ${{ secrets.DEPENDABOT_ALERTS_TOKEN }}
           mode: enforce                 # or 'audit'
-          enforce-severities: critical,high
+          # One knob for both gates + the filter: only high/critical are
+          # evaluated, enforced, and sent to the AI. Empty = all severities.
+          severity-threshold: high
           sla-critical: "7"
           sla-high: "30"
           sla-medium: "60"
@@ -172,8 +191,9 @@ jobs:
           # setting first if your audit policy needs a longer window.
           report-retention-days: "90"
           # --- Optional AI risk assessment (SLA- and KEV-aware) ---
+          # With ai-assess on, the SLA check is audit-only and the AI verdict
+          # (fail-on = severity-threshold above) is what blocks in enforce mode.
           ai-assess: "true"
           models-token: ${{ github.token }}   # needs 'models: read'
           deployment-environment: "production - public internet-facing"
-          ai-fail-on: ""                # empty = advisory; e.g. 'high' to block
 ```
