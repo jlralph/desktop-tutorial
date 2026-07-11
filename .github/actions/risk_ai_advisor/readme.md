@@ -1,7 +1,7 @@
 # Risk AI Advisor
 
 A composite GitHub Action that uses an AI model to judge whether a build is safe
-to release to a **public-facing website**. It reads the repository's open
+to release to the **deployment environment** and **compensating controls** specified in the input. It reads the repository's open
 **CodeQL code-scanning** alerts and open **Dependabot** alerts, enriches the
 Dependabot findings with the [CISA Known Exploited Vulnerabilities (KEV)
 catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog), sends
@@ -13,8 +13,9 @@ Every run is tied to a commit SHA and a JSON advisory report is uploaded as an
 artifact named after that SHA, so the assessment can be evidenced later.
 
 When the calling workflow grants `id-token: write` and `attestations: write`, the
-action can also generate a signed provenance attestation for the advisory report
-and the uploaded artifact bundle.
+action can also generate signed provenance attestations for the advisory report,
+the model I/O record (the exact prompt, context, and response), and the uploaded
+artifact bundle.
 
 ## What it does
 
@@ -47,7 +48,12 @@ and the uploaded artifact bundle.
 
 6. Writes a job summary, a JSON report artifact, and step outputs. The summary
    includes a dedicated table of KEV-listed (known-exploited) CVEs when any are
-   matched.
+   matched, plus a collapsible **"Model prompt, context and response"** section
+   that expands to show the exact system prompt, user prompt (with alert data),
+   and the model's verdict — so the inference is auditable at a glance.
+7. Writes a separate JSON **model I/O record** capturing the full request (system
+   + user prompt with all inputs resolved) and response (raw API body + parsed
+   verdict), which can be independently signed (see [Report attestation](#report-attestation)).
 
 If there are **no** open alerts, the action records a deterministic
 `minimal` / `go` verdict and skips the model call.
@@ -139,6 +145,7 @@ logs a warning and proceeds on whatever signal it can read rather than failing.
 | `upload-report` | `true` | Upload the JSON report as an artifact. |
 | `report-retention-days` | `90` | Artifact retention period. |
 | `attest-report` | `true` | Generate signed provenance attestations for the report and uploaded artifact bundle. |
+| `attest-model-io` | `true` | Generate a signed provenance attestation for the model I/O record (prompt, context, and response). Independent of `attest-report`. |
 
 ## Outputs
 
@@ -153,14 +160,21 @@ logs a warning and proceeds on whatever signal it can read rather than failing.
 | `kev-matched` | Distinct CVEs across open Dependabot alerts that are in the CISA KEV catalog. |
 | `audited-commit` | Commit SHA assessed. |
 | `report-path` | Path to the JSON report. |
+| `model-io-path` | Path to the JSON model I/O record (prompt, context, and response). |
 | `attestation-url` | URL of the signed provenance attestation for the advisory report file. |
+| `model-io-attestation-url` | URL of the signed provenance attestation for the model I/O record. |
 | `bundle-attestation-url` | URL of the signed provenance attestation for the uploaded artifact bundle. |
 
 ## Report attestation
 
 When `attest-report` is `true`, the action generates signed build-provenance
-attestations for both the report file and the uploaded artifact bundle. This
-uses keyless Sigstore signing via the workflow's OIDC identity and allows later
+attestations for both the report file and the uploaded artifact bundle. When
+`attest-model-io` is `true`, it additionally signs the **model I/O record** — the
+exact request (system + user prompt with all inputs resolved) and response (raw
+API body + parsed verdict) — so the inference itself, not just the derived
+verdict, can be evidenced. The two inputs are independent, so you can attest the
+prompt/response even if you don't attest the report, or vice versa. All of these
+use keyless Sigstore signing via the workflow's OIDC identity and allow later
 verification with `gh attestation verify`.
 
 This requires the calling workflow to grant:

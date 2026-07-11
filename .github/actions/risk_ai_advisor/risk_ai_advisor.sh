@@ -196,6 +196,15 @@ MITIGATIONS_TEXT="$MITIGATIONS"
 [[ -z "${MITIGATIONS_TEXT//[[:space:]]/}" ]] && MITIGATIONS_TEXT="None specified."
 # Single-line, pipe-escaped form so it renders cleanly in the Markdown summary cell.
 MITIGATIONS_CELL=$(printf '%s' "$MITIGATIONS_TEXT" | tr '\n' ' ' | sed 's/|/\\|/g')
+# Same single-line, pipe-escaped treatment for the context cells in the summary twisty.
+APP_CONTEXT_CELL=$(printf '%s' "$APP_CONTEXT" | tr '\n' ' ' | sed 's/|/\\|/g')
+DEPLOYMENT_ENVIRONMENT_CELL=$(printf '%s' "$DEPLOYMENT_ENVIRONMENT" | tr '\n' ' ' | sed 's/|/\\|/g')
+
+# Captured for the step-summary twisty and the model-I/O attestation record.
+# Populated when the model is called; left as placeholders on the no-alerts path.
+SYSTEM_PROMPT=""
+USER_PROMPT=""
+RAW_RESPONSE=""
 
 # --- Decide whether we need the model at all --------------------------------
 # With zero open alerts there is nothing for the model to weigh; emit a
@@ -360,9 +369,11 @@ else
     exit 1
   fi
 
-  # Log the full raw HTTP response body (choices, usage, etc.) so the complete
+  # Capture the raw HTTP response body for the audit record and step-summary
+  # twisty, then log the full body (choices, usage, etc.) so the complete
   # inference is auditable from the run. Pretty-printed when valid JSON, otherwise
   # emitted verbatim. No secrets are present in the response body.
+  RAW_RESPONSE=$(cat "$RESP_FILE")
   echo "::group::Risk AI Advisor — model response: raw API body"
   jq . "$RESP_FILE" 2>/dev/null || cat "$RESP_FILE"
   echo "::endgroup::"
@@ -486,6 +497,54 @@ jq -n \
 
 echo "Advisory report written to ${REPORT_PATH}"
 
+# --- Write model I/O record (prompt, context, response) ----------------------
+# Captures the exact request (system + user prompt with all inputs resolved) and
+# the model's response (raw API body + parsed verdict) so the inference itself —
+# not just the derived verdict in the advisory report — can be evidenced and,
+# optionally, attested. Kept in a separate file from the report so it can be
+# signed independently (see the attest-model-io input).
+MODEL_IO_PATH="risk-ai-advisor-model-io-${GITHUB_SHA:-local}.json"
+# Embed the raw response as JSON when parseable, otherwise as a JSON string.
+RAW_RESPONSE_JSON=$(jq -e . <<< "$RAW_RESPONSE" 2>/dev/null || jq -Rs . <<< "$RAW_RESPONSE")
+jq -n \
+  --arg commit "${GITHUB_SHA:-}" \
+  --arg repo "$REPOSITORY" \
+  --arg run_url "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-$REPOSITORY}/actions/runs/${GITHUB_RUN_ID:-0}" \
+  --arg assessed_at "$NOW_ISO" \
+  --arg model "$MODEL_USED" \
+  --arg system_prompt "$SYSTEM_PROMPT" \
+  --arg user_prompt "$USER_PROMPT" \
+  --arg app_context "$APP_CONTEXT" \
+  --arg deployment_environment "$DEPLOYMENT_ENVIRONMENT" \
+  --arg mitigations "$MITIGATIONS_TEXT" \
+  --argjson raw "$RAW_RESPONSE_JSON" \
+  --argjson verdict "$VERDICT" \
+  '{
+    audit: {
+      commit_sha: $commit,
+      repository: $repo,
+      run_url: $run_url,
+      assessed_at: $assessed_at,
+      model: $model
+    },
+    request: {
+      model: $model,
+      system_prompt: $system_prompt,
+      user_prompt: $user_prompt,
+      context: {
+        app_context: $app_context,
+        deployment_environment: $deployment_environment,
+        mitigations: $mitigations
+      }
+    },
+    response: {
+      raw: $raw,
+      verdict: $verdict
+    }
+  }' > "$MODEL_IO_PATH"
+
+echo "Model I/O record written to ${MODEL_IO_PATH}"
+
 # --- Step summary ------------------------------------------------------------
 risk_emoji() {
   case "$1" in
@@ -597,6 +656,45 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     fi
     echo "</details>"
   fi
+
+  # Model prompt, context, and response — collapsed by default so a reviewer can
+  # expand and audit exactly what was sent to and returned by the model. The full
+  # raw API body is in the workflow log and the attestable model-I/O record.
+  echo "<details><summary>🧾 Model prompt, context and response (click to expand)</summary>"
+  echo ""
+  echo "**Model:** \`${MODEL_USED}\`"
+  echo ""
+  echo "**Context sent to the model**"
+  echo ""
+  echo "| Field | Value |"
+  echo "|---|---|"
+  echo "| App context | ${APP_CONTEXT_CELL} |"
+  echo "| Deployment environment | ${DEPLOYMENT_ENVIRONMENT_CELL} |"
+  echo "| Compensating controls | ${MITIGATIONS_CELL} |"
+  echo ""
+  if [[ "$TOTAL_OPEN" -eq 0 ]]; then
+    echo "> No model call was made — there were no open CodeQL or Dependabot alerts, so a deterministic \`minimal\` / \`go\` verdict was recorded without querying the model."
+    echo ""
+  else
+    echo "**System prompt**"
+    echo ""
+    echo '```text'
+    echo "$SYSTEM_PROMPT"
+    echo '```'
+    echo ""
+    echo "**User prompt (context + alert data actually sent)**"
+    echo ""
+    echo '```text'
+    echo "$USER_PROMPT"
+    echo '```'
+    echo ""
+  fi
+  echo "**Model response (verdict)**"
+  echo ""
+  echo '```json'
+  jq . <<< "$VERDICT"
+  echo '```'
+  echo "</details>"
 } >> "$GITHUB_STEP_SUMMARY"
 fi
 
@@ -611,6 +709,7 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   echo "kev-matched=${KEV_MATCHED}"
   echo "audited-commit=${GITHUB_SHA:-}"
   echo "report-path=${REPORT_PATH}"
+  echo "model-io-path=${MODEL_IO_PATH}"
   # summary may contain characters; clamp to one line for the output value.
   echo "summary=$(tr '\n' ' ' <<< "$SUMMARY" | head -c 500)"
 } >> "$GITHUB_OUTPUT"

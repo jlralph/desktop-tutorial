@@ -14,7 +14,7 @@ The application currently consists of a minimal Spring Boot service with a greet
 - [pom.xml](pom.xml) — Maven build file targeting Java 25 and Spring Boot 4.0.6
 - [scripts/create-cve-issues.sh](scripts/create-cve-issues.sh) — helper script that turns OWASP Dependency Check output into GitHub issues
 
-The build also pins an intentionally vulnerable dependency, `org.apache.logging.log4j:log4j-core:2.14.1`, to exercise vulnerability scanning and KEV-related workflows.
+The build contains a commented-out, intentionally vulnerable dependency, `org.apache.logging.log4j:log4j-core:2.14.1` (Log4Shell, CVE-2021-44228, a CISA KEV entry), in [pom.xml](pom.xml). It is left in place — but disabled so it is never shipped — to document and, when uncommented, exercise the KEV-aware vulnerability scanning and risk workflows.
 
 ## Run locally
 
