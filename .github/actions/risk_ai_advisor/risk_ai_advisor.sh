@@ -401,6 +401,10 @@ else
     exit 1
   fi
 
+  # Some models wrap their JSON in a markdown code fence (```json ... ```).
+  # Remove any lines that are purely a fence marker so jq can parse the content.
+  CONTENT=$(sed '/^```/d' <<< "$CONTENT")
+
   if ! VERDICT=$(jq -e . <<< "$CONTENT" 2>/dev/null); then
     echo "::error::Could not parse the model's JSON verdict. Raw content: $(head -c 800 <<< "$CONTENT")"
     exit 1
