@@ -643,18 +643,16 @@ The deployment environment is: \"${DEPLOYMENT_ENVIRONMENT}\". Output only what t
     '.[] | "Risk: \(.risk_title)\nSeverity: \(.severity)\nSearch terms: \(.search_terms | join(", "))\nEvidence found: \(.evidence_found) (\(.match_count) match(es) in \(.file_count) file(s))\nTop matches:\n\(.matches[0:3][] | "  \(.file):\(.line)  \(.content)")\n"' \
     <<< "$THREAT_HUNTING_FINDINGS" 2>/dev/null || echo "<could not format findings>")
 
+  HUNTING_INSTRUCTION="Reassess the release risk given this evidence. For each key risk, consider whether the vulnerable API surface is confirmed present, confirmed absent, or ambiguous in the source code. Update risk_level, recommendation, confidence, summary, key_risks, and recommended_mitigations accordingly. Add a reassessment_notes field (plain text, 3-5 sentences) explaining what changed from the initial verdict and why, citing specific findings."
   HUNTING_USER_PROMPT=$(jq -nr \
     --arg env "$DEPLOYMENT_ENVIRONMENT" \
     --argjson initial_verdict "$INITIAL_VERDICT" \
     --argjson findings "$THREAT_HUNTING_FINDINGS" \
+    --arg instruction "$HUNTING_INSTRUCTION" \
     '"Deployment environment: \($env)\n\n" +
      "Initial verdict (from dependency/CodeQL analysis):\n" + ($initial_verdict | tojson) + "\n\n" +
      "Threat hunting results (targeted static search of the source tree for each key risk):\n" + ($findings | tojson) + "\n\n" +
-     "Reassess the release risk given this evidence. For each key risk, consider whether the \
-vulnerable API surface is confirmed present, confirmed absent, or ambiguous in the source code. \
-Update risk_level, recommendation, confidence, summary, key_risks, and recommended_mitigations \
-accordingly. Add a reassessment_notes field (plain text, 3-5 sentences) explaining what changed \
-from the initial verdict and why, citing specific findings."')
+     $instruction')
 
   HUNTING_SCHEMA=$(jq -nc '{
     type: "object",
