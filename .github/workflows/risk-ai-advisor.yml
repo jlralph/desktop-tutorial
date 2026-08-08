@@ -157,7 +157,7 @@ jobs:
           mitigations: ${{ steps.mitigations.outputs.list }}
           # Advisory by default; dispatch with a value to gate the release.
           fail-on: ${{ github.event.inputs.fail-on || '' }}
-          max-alerts: "75"
+          max-alerts: "50"
           upload-report: "true"
           report-retention-days: "90"
 
