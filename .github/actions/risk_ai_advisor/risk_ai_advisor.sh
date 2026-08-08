@@ -433,6 +433,13 @@ RECOMMENDATION=$(jq -r '
   // .verdict
   // "null"' <<< "$VERDICT")
 CONFIDENCE=$(jq -r '.confidence // .confidence_level // .assessment_confidence // "unknown"' <<< "$VERDICT")
+# If the model omitted confidence entirely, derive it from recommendation decisiveness.
+if [[ "$CONFIDENCE" == "unknown" ]]; then
+  case "$RECOMMENDATION" in
+    block|go)        CONFIDENCE="high" ;;
+    conditional-go)  CONFIDENCE="medium" ;;
+  esac
+fi
 SUMMARY=$(jq -r '.summary // "null"' <<< "$VERDICT")
 
 if [[ "$RISK_LEVEL" == "null" || "$RECOMMENDATION" == "null" ]]; then
