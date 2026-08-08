@@ -430,6 +430,7 @@ RISK_LEVEL=$(jq -r '
 RECOMMENDATION=$(jq -r '
   .recommendation
   // .release_recommendation
+  // .release_verdict
   // .verdict
   // "null"' <<< "$VERDICT")
 CONFIDENCE=$(jq -r '.confidence // .confidence_level // .assessment_confidence // "unknown"' <<< "$VERDICT")
@@ -440,7 +441,20 @@ if [[ "$CONFIDENCE" == "unknown" ]]; then
     conditional-go)  CONFIDENCE="medium" ;;
   esac
 fi
-SUMMARY=$(jq -r '.summary // "null"' <<< "$VERDICT")
+# Accept common summary field aliases; also handle verdict_summary.
+SUMMARY=$(jq -r '.summary // .verdict_summary // .risk_summary // "null"' <<< "$VERDICT")
+# If recommended_mitigations is an array of objects (not strings), flatten to "action: detail" strings.
+VERDICT=$(jq 'if (.recommended_mitigations | length) > 0 and (.recommended_mitigations[0] | type) == "object"
+  then .recommended_mitigations |= map(
+    if .action then
+      (if .detail then "\(.action): \(.detail)" else .action end)
+    elif .mitigation then .mitigation
+    elif .description then .description
+    else tostring
+    end
+  )
+  else .
+  end' <<< "$VERDICT")
 
 if [[ "$RISK_LEVEL" == "null" || "$RECOMMENDATION" == "null" ]]; then
   echo "::error::Could not extract risk_level ('${RISK_LEVEL}') or recommendation ('${RECOMMENDATION}') from the model's verdict. The model may have returned an unexpected schema. Full verdict:"
