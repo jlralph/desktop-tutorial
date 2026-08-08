@@ -432,7 +432,7 @@ RECOMMENDATION=$(jq -r '
   // .release_recommendation
   // .verdict
   // "null"' <<< "$VERDICT")
-CONFIDENCE=$(jq -r '.confidence // "null"' <<< "$VERDICT")
+CONFIDENCE=$(jq -r '.confidence // .confidence_level // .assessment_confidence // "unknown"' <<< "$VERDICT")
 SUMMARY=$(jq -r '.summary // "null"' <<< "$VERDICT")
 
 if [[ "$RISK_LEVEL" == "null" || "$RECOMMENDATION" == "null" ]]; then
