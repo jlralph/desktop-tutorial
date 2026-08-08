@@ -419,10 +419,27 @@ else
 fi
 
 # --- Extract verdict fields --------------------------------------------------
-RISK_LEVEL=$(jq -r '.risk_level' <<< "$VERDICT")
-RECOMMENDATION=$(jq -r '.recommendation' <<< "$VERDICT")
-CONFIDENCE=$(jq -r '.confidence' <<< "$VERDICT")
-SUMMARY=$(jq -r '.summary' <<< "$VERDICT")
+# Some models return non-schema field names (e.g. overall_risk_level, release_recommendation,
+# overall_risk, verdict) despite the json_schema instruction. Accept common aliases.
+RISK_LEVEL=$(jq -r '
+  .risk_level
+  // .overall_risk_level
+  // .overall_risk
+  // .risk
+  // "null"' <<< "$VERDICT")
+RECOMMENDATION=$(jq -r '
+  .recommendation
+  // .release_recommendation
+  // .verdict
+  // "null"' <<< "$VERDICT")
+CONFIDENCE=$(jq -r '.confidence // "null"' <<< "$VERDICT")
+SUMMARY=$(jq -r '.summary // "null"' <<< "$VERDICT")
+
+if [[ "$RISK_LEVEL" == "null" || "$RECOMMENDATION" == "null" ]]; then
+  echo "::error::Could not extract risk_level ('${RISK_LEVEL}') or recommendation ('${RECOMMENDATION}') from the model's verdict. The model may have returned an unexpected schema. Full verdict:"
+  jq . <<< "$VERDICT" >&2
+  exit 1
+fi
 
 # --- Determine gate result ---------------------------------------------------
 # fail-on is a severity THRESHOLD, not an exact-match list: the job fails when the
