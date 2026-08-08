@@ -28,28 +28,45 @@ KEV_URL="https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerab
 # cached copy when present, otherwise downloads and writes it. Degrades to an
 # empty map ({}) on any failure so the advisor still runs.
 build_kev_map() {
-  local out="$1" raw
-  if [[ -s "$out" ]] && jq -e 'type == "object"' "$out" >/dev/null 2>&1; then
+  local out="$1" raw tmp
+  # Validate a cached map against the shape we produced: an object whose keys are
+  # CVE ids and whose values carry at least a matching .cve field. This defends
+  # against a poisoned cache (an attacker with actions:write on the branch could
+  # otherwise plant any JSON object here to bias the AI verdict).
+  if [[ -s "$out" ]] && jq -e '
+        (type == "object") and
+        (to_entries | all(
+             (.key   | test("^CVE-[0-9]{4}-[0-9]+$"))
+             and (.value | type == "object")
+             and ((.value.cve // "") == .key)
+        ))
+      ' "$out" >/dev/null 2>&1; then
     echo "Reusing cached CISA KEV catalog (${out})." >&2
     return 0
   fi
+  # Write via a temp file next to the target and atomic-mv so a partial or invalid
+  # write can never leave a poisoned map behind for the next run to reuse.
+  tmp=$(mktemp "${out}.XXXXXX")
   if raw=$(curl -sSf --max-time 30 "$KEV_URL" 2>/dev/null) \
      && jq -e '.vulnerabilities | type == "array"' <<< "$raw" >/dev/null 2>&1; then
-    jq -c '[ .vulnerabilities[] | {
-        key: .cveID,
-        value: {
-          cve: .cveID,
-          name: .vulnerabilityName,
-          date_added: .dateAdded,
-          due_date: .dueDate,
-          known_ransomware: .knownRansomwareCampaignUse,
-          required_action: .requiredAction
-        }
-      } ] | from_entries'  <<< "$raw" > "$out"
+    jq -c '[ .vulnerabilities[]
+             | select(.cveID | type == "string" and test("^CVE-[0-9]{4}-[0-9]+$"))
+             | {
+                 key: .cveID,
+                 value: {
+                   cve: .cveID,
+                   name: .vulnerabilityName,
+                   date_added: .dateAdded,
+                   due_date: .dueDate,
+                   known_ransomware: .knownRansomwareCampaignUse,
+                   required_action: .requiredAction
+                 }
+               } ] | from_entries'  <<< "$raw" > "$tmp"
   else
     echo "::warning::Could not fetch/parse the CISA KEV catalog; proceeding without known-exploited enrichment." >&2
-    echo "{}" > "$out"
+    echo "{}" > "$tmp"
   fi
+  mv -f "$tmp" "$out"
 }
 
 # When the action supplies a cache dir (persisted across runs by actions/cache),

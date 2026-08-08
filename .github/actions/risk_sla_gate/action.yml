@@ -245,14 +245,14 @@ runs:
       # public transparency log, so the report's authenticity and origin can
       # be proven during a later audit (gh attestation verify <file>).
       if: ${{ always() && inputs.attest-report == 'true' && steps.gate.outputs.report-path != '' }}
-      uses: actions/attest-build-provenance@v2
+      uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
       with:
         subject-path: ${{ steps.gate.outputs.report-path }}
 
     - name: Upload compliance report artifact
       id: upload
       if: ${{ always() && inputs.upload-report == 'true' && steps.gate.outputs.report-path != '' }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: risk-sla-gate-report-${{ github.sha }}
         path: ${{ steps.gate.outputs.report-path }}
@@ -264,7 +264,7 @@ runs:
       # JSON inside it), so the exact bundle pulled from the run's artifacts
       # during an audit can be proven authentic and untampered.
       if: ${{ always() && inputs.attest-report == 'true' && steps.upload.outputs.artifact-digest != '' }}
-      uses: actions/attest-build-provenance@v2
+      uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
       with:
         subject-name: risk-sla-gate-report-${{ github.sha }}.zip
         subject-digest: sha256:${{ steps.upload.outputs.artifact-digest }}

@@ -87,8 +87,10 @@ block the job. Note that the model only ever sees in-scope alerts — anything
 below the threshold is filtered out before the prompt is built.
 
 The exact prompts sent and the raw model response are logged (collapsed) in the
-workflow run for auditability; they contain only public alert metadata and
-config inputs — no tokens or secrets.
+workflow run for auditability. They contain public alert metadata plus the
+free-text config inputs (`app-context`, `mitigations`, `deployment-environment`)
+verbatim — the action never puts tokens or secrets in them, so make sure the
+caller doesn't either (see [Security notes](#security-notes)).
 
 When `ai-assess` is `false` (the default) no model is called and behavior is
 unchanged.
@@ -142,6 +144,30 @@ This requires the calling workflow to grant `id-token: write` and
 `attestations: write` permissions (see the example below). The
 `attestation-url` and `bundle-attestation-url` outputs record the attestation
 locations as audit evidence.
+
+## Security notes
+
+- **Alert metadata is untrusted input to the AI.** `package`, `ecosystem`,
+  `manifest_path`, `cve_id`, advisory titles, and the alert URL all originate
+  from third-party dependency metadata and are passed to the model as data. The
+  system prompt tells the model to disregard directive-looking text in those
+  fields, and output is constrained by a strict JSON schema — but a hostile
+  advisory could still bias a verdict. Because the AI is advisory unless
+  `mode: enforce` **and** `severity-threshold` are both set, keep that in mind
+  when relying on the AI verdict to block releases.
+- **Free-text inputs are logged and persisted.** `app-context`, `mitigations`,
+  and `deployment-environment` are echoed to the workflow log (collapsed
+  `::group::` blocks) and merged into the signed compliance report. Do not
+  pass secrets in these fields.
+- **Third-party actions are pinned by SHA.** `actions/attest-build-provenance`
+  and `actions/upload-artifact` are pinned to commit SHAs (with the tag noted
+  in a trailing comment). If you fork this action, keep them pinned — a
+  compromised floating tag would run with `id-token: write` and
+  `attestations: write`.
+- **Report authenticity.** Every report is signed with a Sigstore
+  build-provenance attestation, so a downstream consumer can verify the file
+  came from this workflow run with `gh attestation verify` — a tampered report
+  will fail verification.
 
 ## Token requirements
 
