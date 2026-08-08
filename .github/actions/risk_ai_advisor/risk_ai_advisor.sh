@@ -244,6 +244,7 @@ else
       summary: { type: "string" },
       key_risks: {
         type: "array",
+        maxItems: 10,
         items: {
           type: "object",
           additionalProperties: false,
@@ -256,7 +257,7 @@ else
           required: ["title","severity","source","why_it_matters"]
         }
       },
-      recommended_mitigations: { type: "array", items: { type: "string" } }
+      recommended_mitigations: { type: "array", maxItems: 5, items: { type: "string" } }
     },
     required: ["risk_level","recommendation","confidence","summary","key_risks","recommended_mitigations"]
   }')
@@ -323,7 +324,7 @@ else
        "CISA KEV catalog: \($kev_size) entries loaded; \($kev_matched) distinct CVE(s) across the open Dependabot alerts match the KEV catalog (actively exploited in the wild). Dependabot findings are annotated with \"known_exploited\" and a \"kev\" object when matched.\n\n" +
        "CodeQL findings (JSON):\n" + ($codeql | tojson) + "\n\n" +
        "Dependabot findings (JSON):\n" + ($dependabot | tojson) + "\n\n" +
-       "Assess the OVERALL risk of releasing this build to the public-facing site described above. Give decisive weight to any KEV-listed (known_exploited) vulnerability. Return your verdict per the required schema. In key_risks, list ALL release-relevant issues a reviewer should weigh — not only KEV-matched ones. Always include other serious findings (critical/high severity, internet-reachable CodeQL findings, and notable Dependabot vulnerabilities) alongside any KEV matches; do not drop them just because a KEV match exists. Order key_risks by importance (KEV-listed and critical first), set source to \"codeql\" or \"dependabot\", and call out KEV/known-exploited status in why_it_matters when applicable. In recommended_mitigations, give concrete, prioritized actions, remediating known-exploited vulnerabilities first."')
+       "Assess the OVERALL risk of releasing this build to the public-facing site described above. Give decisive weight to any KEV-listed (known_exploited) vulnerability. Return your verdict per the required schema. In key_risks, include up to 10 of the most release-relevant issues a reviewer should weigh — prioritise KEV-listed and critical findings first, then high-severity ones, set source to \"codeql\" or \"dependabot\", and call out KEV/known-exploited status in why_it_matters when applicable. Keep each why_it_matters to 2-3 sentences. In recommended_mitigations, give up to 5 concrete, prioritized actions, remediating known-exploited vulnerabilities first."')
 
     REQ=$(jq -nc \
       --arg model "$MODEL" \
