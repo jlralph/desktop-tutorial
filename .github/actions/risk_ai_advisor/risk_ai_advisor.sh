@@ -695,7 +695,7 @@ The deployment environment is: \"${DEPLOYMENT_ENVIRONMENT}\". Output only what t
         type: "json_schema",
         json_schema: { name: "threat_hunting_reassessment", strict: true, schema: $schema }
       },
-      max_tokens: 4096
+      max_tokens: 8192
     }')
 
   echo "Requesting threat hunting reassessment from ${AI_ENDPOINT} (model=${MODEL})..."
