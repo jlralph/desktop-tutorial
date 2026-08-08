@@ -448,6 +448,316 @@ if [[ "$RISK_LEVEL" == "null" || "$RECOMMENDATION" == "null" ]]; then
   exit 1
 fi
 
+# --- Snapshot initial verdict before optional threat hunting -----------------
+INITIAL_VERDICT="$VERDICT"
+INITIAL_RISK_LEVEL="$RISK_LEVEL"
+INITIAL_RECOMMENDATION="$RECOMMENDATION"
+INITIAL_CONFIDENCE="$CONFIDENCE"
+INITIAL_SUMMARY="$SUMMARY"
+THREAT_HUNTING_PERFORMED=false
+THREAT_HUNTING_FINDINGS="[]"
+HUNTING_RAW_RESPONSE=""
+HUNTING_SYSTEM_PROMPT=""
+HUNTING_USER_PROMPT=""
+HUNTING_VERDICT=""
+REASSESSMENT_NOTES=""
+
+# --- Threat hunting phase ----------------------------------------------------
+# When the initial verdict is block or conditional-go, search the checked-out
+# source for evidence that each key risk's vulnerable API surface is actually
+# used in this codebase.  The per-risk grep evidence is fed to a second AI call
+# which produces a revised verdict.  Graceful degradation: a failure in the
+# hunting or reassessment step emits a warning and falls through to the initial
+# verdict rather than failing the run.
+if [[ "$RECOMMENDATION" == "block" || "$RECOMMENDATION" == "conditional-go" ]] && \
+   [[ "$TOTAL_OPEN" -gt 0 ]]; then
+  THREAT_HUNTING_PERFORMED=true
+  SEARCH_ROOT="${GITHUB_WORKSPACE:-.}"
+  SOURCE_EXTS=("*.java" "*.kt" "*.groovy" "*.scala" "*.xml" "*.gradle" "*.gradle.kts"
+               "*.yaml" "*.yml" "*.properties" "*.json" "*.py" "*.js" "*.ts" "*.go"
+               "*.rb" "*.php" "*.cs" "*.cpp" "*.c" "*.rs")
+  EXCLUDE_DIRS=(".git" "target" "build" "node_modules" ".gradle" ".mvn" "dist" ".idea")
+
+  # Build the --include and --exclude-dir flags once
+  GREP_INCLUDES=()
+  for ext in "${SOURCE_EXTS[@]}"; do GREP_INCLUDES+=("--include=${ext}"); done
+  GREP_EXCLUDES=()
+  for d in "${EXCLUDE_DIRS[@]}"; do GREP_EXCLUDES+=("--exclude-dir=${d}"); done
+
+  HUNTING_FINDINGS_ARR=()
+  RISK_COUNT=$(jq '.key_risks | length' <<< "$INITIAL_VERDICT")
+  echo "Threat hunting: scanning ${SEARCH_ROOT} for evidence across ${RISK_COUNT} key risk(s)..."
+
+  for (( i=0; i<RISK_COUNT; i++ )); do
+    RISK_TITLE=$(jq -r --argjson i "$i" '.key_risks[$i].title' <<< "$INITIAL_VERDICT")
+    RISK_SEV=$(jq -r --argjson i "$i" '.key_risks[$i].severity' <<< "$INITIAL_VERDICT")
+    RISK_PKG=$(jq -r --argjson i "$i" '.key_risks[$i].package // ""' <<< "$INITIAL_VERDICT")
+    RISK_SRC=$(jq -r --argjson i "$i" '.key_risks[$i].source' <<< "$INITIAL_VERDICT")
+    RISK_WHY=$(jq -r --argjson i "$i" '.key_risks[$i].why_it_matters' <<< "$INITIAL_VERDICT")
+
+    echo "::group::Threat hunting — risk $((i+1))/${RISK_COUNT}: ${RISK_TITLE}"
+
+    # Derive search terms: artifact id from package + significant title words
+    ARTIFACT_ID=""
+    if [[ -n "$RISK_PKG" && "$RISK_PKG" != "null" ]]; then
+      ARTIFACT_ID="${RISK_PKG##*:}"   # everything after the last ':'
+    fi
+
+    # Extract up to 4 distinctive keywords from the title (skip noise words)
+    NOISE_PAT='^\(via\|in\|the\|of\|and\|by\|not\|a\|an\|to\|for\|on\|with\|from\|using\|via\|through\|during\|when\|is\|are\|are\|be\|that\|this\|its\|cve-[0-9-]*\|ghsa-[a-z0-9-]*\)$'
+    mapfile -t TITLE_WORDS < <(
+      echo "$RISK_TITLE" \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed 's/[^a-z0-9 ]/ /g; s/  */ /g' \
+        | tr ' ' '\n' \
+        | grep -v "$NOISE_PAT" \
+        | grep -E '.{4,}' \
+        | head -4
+    )
+
+    # Collect search terms; deduplicate; filter empties
+    declare -A SEEN_TERMS=()
+    SEARCH_TERMS=()
+    for t in "$ARTIFACT_ID" "${TITLE_WORDS[@]}"; do
+      t_lower="${t,,}"
+      [[ -z "$t_lower" || "$t_lower" == "null" ]] && continue
+      [[ "${SEEN_TERMS[$t_lower]+_}" ]] && continue
+      SEEN_TERMS[$t_lower]=1
+      SEARCH_TERMS+=("$t")
+    done
+    unset SEEN_TERMS
+
+    echo "Search terms: ${SEARCH_TERMS[*]:-<none>}"
+
+    # Run grep for each search term; collect file:line:content hits
+    declare -A SEEN_FILES=()
+    MATCHES_JSON="[]"
+    MATCH_COUNT=0
+    FILE_COUNT=0
+    FILE_CAP=8
+    LINE_CAP=5
+    LINE_LEN_CAP=120
+
+    for term in "${SEARCH_TERMS[@]}"; do
+      [[ "$FILE_COUNT" -ge "$FILE_CAP" ]] && break
+      # -l to get file list first (fast), then -n -m $LINE_CAP per file
+      mapfile -t MATCHING_FILES < <(
+        grep -rl --binary-files=without-match \
+          "${GREP_INCLUDES[@]}" "${GREP_EXCLUDES[@]}" \
+          -i "$term" "$SEARCH_ROOT" 2>/dev/null \
+          | head -"$FILE_CAP"
+      )
+      for fpath in "${MATCHING_FILES[@]}"; do
+        [[ "$FILE_COUNT" -ge "$FILE_CAP" ]] && break
+        fpath_rel="${fpath#"$SEARCH_ROOT/"}"
+        [[ "${SEEN_FILES[$fpath_rel]+_}" ]] && continue
+        SEEN_FILES[$fpath_rel]=1
+        (( FILE_COUNT++ ))
+        while IFS=: read -r lineno content; do
+          content_trunc="${content:0:$LINE_LEN_CAP}"
+          [[ "${#content}" -gt "$LINE_LEN_CAP" ]] && content_trunc+="…"
+          MATCHES_JSON=$(jq --arg f "$fpath_rel" --arg l "$lineno" --arg c "$content_trunc" \
+            '. + [{"file":$f,"line":($l | tonumber? // 0),"content":$c}]' <<< "$MATCHES_JSON")
+          (( MATCH_COUNT++ ))
+        done < <(grep -n -m "$LINE_CAP" --binary-files=without-match \
+            "${GREP_INCLUDES[@]}" "${GREP_EXCLUDES[@]}" \
+            -i "$term" "$fpath" 2>/dev/null)
+      done
+      unset MATCHING_FILES
+    done
+    unset SEEN_FILES
+
+    EVIDENCE_FOUND=false
+    [[ "$MATCH_COUNT" -gt 0 ]] && EVIDENCE_FOUND=true
+    echo "Evidence found: ${EVIDENCE_FOUND} (${MATCH_COUNT} match(es) across ${FILE_COUNT} file(s))"
+    echo "::endgroup::"
+
+    # Build per-risk JSON finding object
+    if [[ "${#SEARCH_TERMS[@]}" -gt 0 ]]; then
+      TERMS_JSON=$(jq -nc --args '$ARGS.positional' -- "${SEARCH_TERMS[@]}")
+    else
+      TERMS_JSON="[]"
+    fi
+    FINDING_JSON=$(jq -nc \
+      --arg title "$RISK_TITLE" \
+      --arg sev "$RISK_SEV" \
+      --arg src "$RISK_SRC" \
+      --arg pkg "$RISK_PKG" \
+      --arg why "$RISK_WHY" \
+      --argjson terms "$TERMS_JSON" \
+      --argjson evidence_found "$EVIDENCE_FOUND" \
+      --argjson match_count "$MATCH_COUNT" \
+      --argjson file_count "$FILE_COUNT" \
+      --argjson matches "$MATCHES_JSON" \
+      '{
+        risk_title: $title,
+        severity: $sev,
+        source: $src,
+        package: $pkg,
+        why_it_matters: $why,
+        search_terms: $terms,
+        evidence_found: $evidence_found,
+        match_count: $match_count,
+        file_count: $file_count,
+        matches: $matches
+      }')
+    HUNTING_FINDINGS_ARR+=("$FINDING_JSON")
+  done
+
+  # Merge per-risk finding objects into the findings JSON array
+  if [[ "${#HUNTING_FINDINGS_ARR[@]}" -gt 0 ]]; then
+    THREAT_HUNTING_FINDINGS=$(printf '%s\n' "${HUNTING_FINDINGS_ARR[@]}" | jq -s '.')
+  else
+    THREAT_HUNTING_FINDINGS="[]"
+  fi
+
+  # --- Reassessment AI call ---------------------------------------------------
+  HUNTING_SYSTEM_PROMPT="You are a principal application security engineer acting as a release gatekeeper. \
+A first-pass analysis identified open dependency and code-scanning vulnerabilities and produced an initial \
+risk verdict. A targeted static search of the checked-out source code has now been run for each key risk \
+to look for evidence that the vulnerable API surface is actually used in this codebase. \
+Your job is to reassess the release verdict in light of this evidence. \
+Lower the risk level or recommendation when the vulnerable feature is genuinely absent from the code \
+(e.g. a Digest auth CVE where the app uses OAuth only, a WebDAV CVE where WebDAV is disabled). \
+Maintain or raise it when code evidence confirms the vulnerable surface is in active use. \
+If evidence is ambiguous or absent for a given risk, be conservative — absence of evidence is not \
+evidence of absence when the search may have been incomplete. \
+Be explicit in reassessment_notes about which risks changed in weight and why. \
+The deployment environment is: \"${DEPLOYMENT_ENVIRONMENT}\". Output only what the provided JSON schema allows."
+
+  HUNTING_FINDINGS_SUMMARY=$(jq -r \
+    '.[] | "Risk: \(.risk_title)\nSeverity: \(.severity)\nSearch terms: \(.search_terms | join(", "))\nEvidence found: \(.evidence_found) (\(.match_count) match(es) in \(.file_count) file(s))\nTop matches:\n\(.matches[0:3][] | "  \(.file):\(.line)  \(.content)")\n"' \
+    <<< "$THREAT_HUNTING_FINDINGS" 2>/dev/null || echo "<could not format findings>")
+
+  HUNTING_USER_PROMPT=$(jq -nr \
+    --arg env "$DEPLOYMENT_ENVIRONMENT" \
+    --argjson initial_verdict "$INITIAL_VERDICT" \
+    --argjson findings "$THREAT_HUNTING_FINDINGS" \
+    '"Deployment environment: \($env)\n\n" +
+     "Initial verdict (from dependency/CodeQL analysis):\n" + ($initial_verdict | tojson) + "\n\n" +
+     "Threat hunting results (targeted static search of the source tree for each key risk):\n" + ($findings | tojson) + "\n\n" +
+     "Reassess the release risk given this evidence. For each key risk, consider whether the \
+vulnerable API surface is confirmed present, confirmed absent, or ambiguous in the source code. \
+Update risk_level, recommendation, confidence, summary, key_risks, and recommended_mitigations \
+accordingly. Add a reassessment_notes field (plain text, 3-5 sentences) explaining what changed \
+from the initial verdict and why, citing specific findings."')
+
+  HUNTING_SCHEMA=$(jq -nc '{
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      risk_level:             { type: "string", enum: ["critical","high","medium","low","minimal"] },
+      recommendation:         { type: "string", enum: ["block","conditional-go","go"] },
+      confidence:             { type: "string", enum: ["high","medium","low"] },
+      summary:                { type: "string" },
+      reassessment_notes:     { type: "string" },
+      key_risks: {
+        type: "array", maxItems: 10,
+        items: {
+          type: "object", additionalProperties: false,
+          properties: {
+            title:          { type: "string" },
+            severity:       { type: "string" },
+            source:         { type: "string" },
+            why_it_matters: { type: "string" }
+          },
+          required: ["title","severity","source","why_it_matters"]
+        }
+      },
+      recommended_mitigations: { type: "array", maxItems: 5, items: { type: "string" } }
+    },
+    required: ["risk_level","recommendation","confidence","summary","reassessment_notes","key_risks","recommended_mitigations"]
+  }')
+
+  HUNTING_REQ=$(jq -nc \
+    --arg model "$MODEL" \
+    --arg sys "$HUNTING_SYSTEM_PROMPT" \
+    --arg usr "$HUNTING_USER_PROMPT" \
+    --argjson schema "$HUNTING_SCHEMA" '{
+      model: $model,
+      messages: [
+        { role: "system", content: $sys },
+        { role: "user",   content: $usr }
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "threat_hunting_reassessment", strict: true, schema: $schema }
+      },
+      max_tokens: 4096
+    }')
+
+  echo "Requesting threat hunting reassessment from ${AI_ENDPOINT} (model=${MODEL})..."
+  HUNTING_RESP_FILE=$(mktemp)
+  HUNTING_HTTP_CODE=$(curl -sS -o "$HUNTING_RESP_FILE" -w '%{http_code}' \
+    -X POST "$AI_ENDPOINT" \
+    -H "$AUTH_HEADER" \
+    -H "Accept: application/json" \
+    -H "Content-Type: application/json" \
+    -d "$HUNTING_REQ" || echo "000")
+
+  if [[ "$HUNTING_HTTP_CODE" != "200" ]]; then
+    echo "::warning::Threat hunting reassessment request failed (HTTP ${HUNTING_HTTP_CODE}); using initial verdict."
+    cat "$HUNTING_RESP_FILE" >&2 || true
+    rm -f "$HUNTING_RESP_FILE"
+    THREAT_HUNTING_PERFORMED=false
+  else
+    HUNTING_RAW_RESPONSE=$(cat "$HUNTING_RESP_FILE")
+    echo "::group::Threat hunting reassessment — raw API body"
+    jq . "$HUNTING_RESP_FILE" 2>/dev/null || cat "$HUNTING_RESP_FILE"
+    echo "::endgroup::"
+    rm -f "$HUNTING_RESP_FILE"
+
+    HUNTING_CONTENT=$(jq -r '.choices[0].message.content // empty' <<< "$HUNTING_RAW_RESPONSE")
+    if [[ -z "$HUNTING_CONTENT" ]]; then
+      echo "::warning::Threat hunting reassessment returned no content; using initial verdict."
+      THREAT_HUNTING_PERFORMED=false
+    else
+      HUNTING_CONTENT=$(sed '/^```/d' <<< "$HUNTING_CONTENT")
+      if ! HUNTING_VERDICT=$(jq -e . <<< "$HUNTING_CONTENT" 2>/dev/null); then
+        echo "::warning::Could not parse threat hunting reassessment JSON; using initial verdict. Raw: $(head -c 400 <<< "$HUNTING_CONTENT")"
+        THREAT_HUNTING_PERFORMED=false
+      else
+        echo "::group::Threat hunting reassessment — verdict JSON"
+        jq . <<< "$HUNTING_VERDICT"
+        echo "::endgroup::"
+
+        # Extract reassessed fields (same alias fallbacks as initial verdict)
+        NEW_RISK_LEVEL=$(jq -r '
+          .risk_level // .overall_risk_level // .overall_risk // .risk // "null"' \
+          <<< "$HUNTING_VERDICT")
+        NEW_RECOMMENDATION=$(jq -r '
+          .recommendation // .release_recommendation // .verdict // "null"' \
+          <<< "$HUNTING_VERDICT")
+        NEW_CONFIDENCE=$(jq -r \
+          '.confidence // .confidence_level // .assessment_confidence // "unknown"' \
+          <<< "$HUNTING_VERDICT")
+        if [[ "$NEW_CONFIDENCE" == "unknown" ]]; then
+          case "$NEW_RECOMMENDATION" in
+            block|go)       NEW_CONFIDENCE="high" ;;
+            conditional-go) NEW_CONFIDENCE="medium" ;;
+          esac
+        fi
+        NEW_SUMMARY=$(jq -r '.summary // "null"' <<< "$HUNTING_VERDICT")
+        REASSESSMENT_NOTES=$(jq -r '.reassessment_notes // ""' <<< "$HUNTING_VERDICT")
+
+        if [[ "$NEW_RISK_LEVEL" == "null" || "$NEW_RECOMMENDATION" == "null" ]]; then
+          echo "::warning::Threat hunting reassessment verdict missing required fields; using initial verdict."
+          THREAT_HUNTING_PERFORMED=false
+          HUNTING_VERDICT=""
+        else
+          # Overwrite verdict and extracted fields so downstream uses reassessed values
+          VERDICT="$HUNTING_VERDICT"
+          RISK_LEVEL="$NEW_RISK_LEVEL"
+          RECOMMENDATION="$NEW_RECOMMENDATION"
+          CONFIDENCE="$NEW_CONFIDENCE"
+          SUMMARY="$NEW_SUMMARY"
+          echo "Threat hunting reassessment complete: ${INITIAL_RISK_LEVEL}/${INITIAL_RECOMMENDATION} → ${RISK_LEVEL}/${RECOMMENDATION}"
+        fi
+      fi
+    fi
+  fi
+fi
+
 # --- Determine gate result ---------------------------------------------------
 # fail-on is a severity THRESHOLD, not an exact-match list: the job fails when the
 # verdict's risk level is at or above the threshold. So fail-on "high" fails on
@@ -499,6 +809,9 @@ jq -n \
   --arg codeql_readable "$CODEQL_READABLE" \
   --arg dependabot_readable "$DEPENDABOT_READABLE" \
   --argjson verdict "$VERDICT" \
+  --argjson initial_verdict "$INITIAL_VERDICT" \
+  --argjson threat_hunting_performed "$THREAT_HUNTING_PERFORMED" \
+  --argjson threat_hunting_findings "$THREAT_HUNTING_FINDINGS" \
   --argjson codeql "$CODEQL" \
   --argjson dependabot "$DEPENDABOT" \
   '{
@@ -533,6 +846,11 @@ jq -n \
       kev_catalog_size: $kev_catalog_size,
       kev_matched: $kev_matched
     },
+    initial_verdict: $initial_verdict,
+    threat_hunting: {
+      performed: $threat_hunting_performed,
+      findings: $threat_hunting_findings
+    },
     verdict: $verdict,
     alerts: {
       codeql: $codeql,
@@ -551,6 +869,12 @@ echo "Advisory report written to ${REPORT_PATH}"
 MODEL_IO_PATH="risk-ai-advisor-model-io-${GITHUB_SHA:-local}.json"
 # Embed the raw response as JSON when parseable, otherwise as a JSON string.
 RAW_RESPONSE_JSON=$(jq -e . <<< "$RAW_RESPONSE" 2>/dev/null || jq -Rs . <<< "$RAW_RESPONSE")
+HUNTING_RAW_RESPONSE_JSON="null"
+if [[ -n "$HUNTING_RAW_RESPONSE" ]]; then
+  HUNTING_RAW_RESPONSE_JSON=$(jq -e . <<< "$HUNTING_RAW_RESPONSE" 2>/dev/null || jq -Rs . <<< "$HUNTING_RAW_RESPONSE")
+fi
+HUNTING_VERDICT_JSON="${HUNTING_VERDICT:-null}"
+[[ -z "$HUNTING_VERDICT_JSON" ]] && HUNTING_VERDICT_JSON="null"
 jq -n \
   --arg commit "${GITHUB_SHA:-}" \
   --arg repo "$REPOSITORY" \
@@ -563,7 +887,14 @@ jq -n \
   --arg deployment_environment "$DEPLOYMENT_ENVIRONMENT" \
   --arg mitigations "$MITIGATIONS_TEXT" \
   --argjson raw "$RAW_RESPONSE_JSON" \
-  --argjson verdict "$VERDICT" \
+  --argjson initial_verdict "$INITIAL_VERDICT" \
+  --argjson threat_hunting_performed "$THREAT_HUNTING_PERFORMED" \
+  --argjson threat_hunting_findings "$THREAT_HUNTING_FINDINGS" \
+  --arg hunting_system_prompt "$HUNTING_SYSTEM_PROMPT" \
+  --arg hunting_user_prompt "$HUNTING_USER_PROMPT" \
+  --argjson hunting_raw "$HUNTING_RAW_RESPONSE_JSON" \
+  --argjson hunting_verdict "$HUNTING_VERDICT_JSON" \
+  --argjson final_verdict "$VERDICT" \
   '{
     audit: {
       commit_sha: $commit,
@@ -584,8 +915,21 @@ jq -n \
     },
     response: {
       raw: $raw,
-      verdict: $verdict
-    }
+      verdict: $initial_verdict
+    },
+    reassessment: (if $threat_hunting_performed then {
+      performed: true,
+      threat_hunting_findings: $threat_hunting_findings,
+      request: {
+        system_prompt: $hunting_system_prompt,
+        user_prompt: $hunting_user_prompt
+      },
+      response: {
+        raw: $hunting_raw,
+        verdict: $hunting_verdict
+      }
+    } else { performed: false } end),
+    final_verdict: $final_verdict
   }' > "$MODEL_IO_PATH"
 
 echo "Model I/O record written to ${MODEL_IO_PATH}"
@@ -633,6 +977,36 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   echo ""
   echo "> ${SUMMARY}"
   echo ""
+  if [[ "$THREAT_HUNTING_PERFORMED" == "true" ]]; then
+    if [[ "$RISK_LEVEL" != "$INITIAL_RISK_LEVEL" || "$RECOMMENDATION" != "$INITIAL_RECOMMENDATION" ]]; then
+      VERDICT_DELTA="changed: ${INITIAL_RISK_LEVEL^^}/${INITIAL_RECOMMENDATION} → ${RISK_LEVEL^^}/${RECOMMENDATION}"
+    else
+      VERDICT_DELTA="unchanged at ${RISK_LEVEL^^}/${RECOMMENDATION}"
+    fi
+    echo "### 🔍 Threat Hunting Results"
+    echo ""
+    echo "> Initial verdict: **${INITIAL_RISK_LEVEL^^} / \`${INITIAL_RECOMMENDATION}\`** → Reassessed: **${RISK_LEVEL^^} / \`${RECOMMENDATION}\`** (${VERDICT_DELTA})"
+    echo ""
+    if [[ -n "$REASSESSMENT_NOTES" ]]; then
+      echo "> **Reassessment notes:** ${REASSESSMENT_NOTES}"
+      echo ""
+    fi
+    HUNT_COUNT=$(jq 'length' <<< "$THREAT_HUNTING_FINDINGS")
+    if [[ "$HUNT_COUNT" -gt 0 ]]; then
+      echo "<details><summary>Per-risk source evidence (${HUNT_COUNT} risk(s) searched)</summary>"
+      echo ""
+      echo "| Risk | Severity | Search terms | Evidence found | Matches |"
+      echo "|---|---|---|---|---|"
+      jq -r '.[] | "| \(.risk_title) | \(.severity) | \(.search_terms | join(", ")) | \(if .evidence_found then "✅ Yes" else "❌ No" end) | \(.match_count) in \(.file_count) file(s) |"' \
+        <<< "$THREAT_HUNTING_FINDINGS"
+      echo ""
+      jq -r '.[] | select(.evidence_found) | "**\(.risk_title)**\n" + (.matches[0:3][] | "- `\(.file):\(.line)` \(.content)")' \
+        <<< "$THREAT_HUNTING_FINDINGS" 2>/dev/null || true
+      echo ""
+      echo "</details>"
+      echo ""
+    fi
+  fi
   echo "### Open alerts by severity"
   echo ""
   echo "| Severity | CodeQL | Dependabot |"
