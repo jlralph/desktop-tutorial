@@ -552,13 +552,13 @@ if [[ "$RECOMMENDATION" == "block" || "$RECOMMENDATION" == "conditional-go" ]] &
         fpath_rel="${fpath#"$SEARCH_ROOT/"}"
         [[ "${SEEN_FILES[$fpath_rel]+_}" ]] && continue
         SEEN_FILES[$fpath_rel]=1
-        (( FILE_COUNT++ ))
+        FILE_COUNT=$(( FILE_COUNT + 1 ))
         while IFS=: read -r lineno content; do
           content_trunc="${content:0:$LINE_LEN_CAP}"
           [[ "${#content}" -gt "$LINE_LEN_CAP" ]] && content_trunc+="…"
           MATCHES_JSON=$(jq --arg f "$fpath_rel" --arg l "$lineno" --arg c "$content_trunc" \
             '. + [{"file":$f,"line":($l | tonumber? // 0),"content":$c}]' <<< "$MATCHES_JSON")
-          (( MATCH_COUNT++ ))
+          MATCH_COUNT=$(( MATCH_COUNT + 1 ))
         done < <(grep -n -m "$LINE_CAP" --binary-files=without-match \
             "${GREP_INCLUDES[@]}" "${GREP_EXCLUDES[@]}" \
             -i "$term" "$fpath" 2>/dev/null)
