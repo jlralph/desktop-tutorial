@@ -339,7 +339,7 @@ else
           type: "json_schema",
           json_schema: { name: "release_risk_assessment", strict: true, schema: $schema }
         },
-        max_tokens: 1500
+        max_tokens: 4096
       }')
 
     # Fits, or we're already down to the minimum we can send — stop shrinking.
