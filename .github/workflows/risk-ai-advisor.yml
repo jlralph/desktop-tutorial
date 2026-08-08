@@ -1,9 +1,9 @@
 name: "Risk AI Advisor"
 
-# Uses an AI model (via GitHub Models) to weigh open CodeQL and Dependabot
-# alerts and produce an overall risk verdict for releasing the build to a
-# public-facing website. Advisory by default; an operator can dispatch a
-# blocking run via workflow_dispatch.
+# Uses an AI model (via the Poe OpenAI-compatible API) to weigh open CodeQL
+# and Dependabot alerts and produce an overall risk verdict for releasing the
+# build to a public-facing website. Advisory by default; an operator can
+# dispatch a blocking run via workflow_dispatch.
 on:
   workflow_dispatch:
     inputs:
@@ -60,16 +60,16 @@ on:
         default: ""
         type: string
       model:
-        description: "GitHub Models model to use for the risk assessment."
+        description: "Poe bot to use for the risk assessment (bare Poe bot name; see https://poe.com for the full catalog)."
         required: false
-        default: "openai/gpt-4.1"
+        default: "Claude-Sonnet-4.6"
         type: choice
         options:
-          - "openai/gpt-4.1"
-          - "openai/gpt-4.1-mini"
-          - "openai/gpt-4o"
-          - "openai/gpt-4o-mini"
-          - "openai/o4-mini"
+          - "Claude-Sonnet-4.6"
+          - "Claude-Opus-4.1"
+          - "GPT-5"
+          - "Gemini-2.5-Pro"
+          - "Grok-4"
   push:
     branches: [main]
   pull_request:
@@ -78,11 +78,10 @@ permissions:
   contents: read
   # Read CodeQL code-scanning alerts via the default GITHUB_TOKEN.
   security-events: read
-  # Call the GitHub Models inference API via the default GITHUB_TOKEN.
-  models: read
   # Required for keyless Sigstore attestation via actions/attest-build-provenance.
   id-token: write
   attestations: write
+  # NB: no 'models: read' — inference goes to Poe, not GitHub Models.
 
 jobs:
   risk-ai-advisor:
@@ -130,13 +129,19 @@ jobs:
         id: advisor
         uses: ./.github/actions/risk_ai_advisor
         with:
-          # The default GITHUB_TOKEN reads CodeQL alerts and calls GitHub Models.
-          # It generally CANNOT read Dependabot alerts — provide a fine-grained
-          # PAT (repository permission "Dependabot alerts: read" + "Metadata:
-          # read") or a GitHub App installation token via this secret. If the
-          # secret is absent the advisor proceeds on CodeQL alerts alone.
+          # The default GITHUB_TOKEN reads CodeQL alerts. It generally CANNOT
+          # read Dependabot alerts — provide a fine-grained PAT (repository
+          # permission "Dependabot alerts: read" + "Metadata: read") or a
+          # GitHub App installation token via this secret. If the secret is
+          # absent the advisor proceeds on CodeQL alerts alone.
           dependabot-token: ${{ secrets.DEPENDABOT_ALERTS_TOKEN || github.token }}
-          model: ${{ github.event.inputs.model || 'openai/gpt-4.1' }}
+          # GitHub Models retired 2026-07-30; route inference to Poe's
+          # OpenAI-compatible endpoint. POE_API_KEY must be defined as a
+          # repo/org secret with a valid Poe API key.
+          ai-endpoint: https://api.poe.com/v1/chat/completions
+          ai-auth-scheme: bearer
+          models-token: ${{ secrets.POE_API_KEY }}
+          model: ${{ github.event.inputs.model || 'Claude-Sonnet-4.6' }}
           # Defaults to the highest-exposure case on non-dispatch triggers.
           deployment-environment: ${{ github.event.inputs.deployment-environment || 'production - public internet-facing' }}
           # Release context is derived from the selected environment so the two

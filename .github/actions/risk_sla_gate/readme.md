@@ -100,12 +100,32 @@ unchanged.
 | Input | Default | Purpose |
 |---|---|---|
 | `ai-assess` | `false` | Enable the AI assessment. |
-| `models-token` | `${{ github.token }}` | Token for the GitHub Models API (needs `models: read`). Pass the workflow `GITHUB_TOKEN` — the Dependabot PAT usually lacks this scope. |
-| `ai-model` | `openai/gpt-4.1` | Model id in `{publisher}/{model}` form. |
+| `ai-endpoint` | GitHub Models URL | Full URL of an OpenAI-compatible chat/completions endpoint. See [Choosing an AI provider](#choosing-an-ai-provider). |
+| `ai-auth-scheme` | `bearer` | `bearer` (`Authorization: Bearer …`) for OpenAI/OpenRouter/Groq/Azure-with-Entra/GitHub Models, or `api-key` for Azure OpenAI resource keys. |
+| `models-token` | `${{ github.token }}` | Token/key sent to the endpoint. For GitHub Models, pass the workflow `GITHUB_TOKEN` (needs `models: read`); for other providers, pass their API key via a secret. |
+| `ai-model` | `openai/gpt-4.1` | Model id. Shape depends on the endpoint (GitHub Models: `{publisher}/{model}`; OpenAI: bare id; Azure: deployment name — often in the URL). |
 | `deployment-environment` | `production - public internet-facing` | Environment/exposure to calibrate the verdict. |
 | `app-context` | *(public web app)* | Free-text description of what is being released. |
 | `mitigations` | *(empty)* | Compensating controls (WAF, CDN, network isolation, …). |
 | `max-alerts` | `75` | Max alerts sent to the model (highest-priority first). |
+
+### Choosing an AI provider
+
+GitHub Models was **fully retired on 2026-07-30**. The default `ai-endpoint`
+still points at the (now-410-returning) GitHub Models URL so existing callers
+who leave `ai-assess: false` are unaffected; anyone turning AI on must point
+`ai-endpoint` at a live OpenAI-compatible provider. Any provider that speaks
+the OpenAI chat/completions request shape will work. Common choices:
+
+| Provider | `ai-endpoint` | `ai-auth-scheme` | `ai-model` example |
+|---|---|---|---|
+| OpenAI | `https://api.openai.com/v1/chat/completions` | `bearer` | `gpt-4.1` |
+| OpenRouter | `https://openrouter.ai/api/v1/chat/completions` | `bearer` | `openai/gpt-4.1` |
+| Groq | `https://api.groq.com/openai/v1/chat/completions` | `bearer` | `llama-3.3-70b-versatile` |
+| Azure OpenAI (resource key) | `https://<resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-10-21` | `api-key` | *(deployment name; usually ignored)* |
+| Azure OpenAI (Entra token) | *(same URL as above)* | `bearer` | *(same as above)* |
+
+Pass the provider's API key as `models-token` via a repo/org secret.
 
 The blocking threshold is the shared [`severity-threshold`](#severity-threshold)
 input, not an AI-specific one.
@@ -219,7 +239,12 @@ jobs:
           # --- Optional AI risk assessment (SLA- and KEV-aware) ---
           # With ai-assess on, the SLA check is audit-only and the AI verdict
           # (fail-on = severity-threshold above) is what blocks in enforce mode.
+          # GitHub Models retired 2026-07-30 — repoint at a live OpenAI-compatible
+          # endpoint (see "Choosing an AI provider").
           ai-assess: "true"
-          models-token: ${{ github.token }}   # needs 'models: read'
+          ai-endpoint: https://api.openai.com/v1/chat/completions
+          ai-auth-scheme: bearer
+          models-token: ${{ secrets.OPENAI_API_KEY }}
+          ai-model: gpt-4.1
           deployment-environment: "production - public internet-facing"
 ```

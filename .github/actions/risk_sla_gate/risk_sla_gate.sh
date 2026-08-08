@@ -31,6 +31,8 @@ AI_ASSESS="${AI_ASSESS:-false}"
 # Dependabot PAT in GH_TOKEN usually lacks that scope, so this defaults to it only
 # as a fallback — callers should pass the workflow's GITHUB_TOKEN via models-token.
 MODELS_TOKEN="${MODELS_TOKEN:-$GH_TOKEN}"
+AI_ENDPOINT="${AI_ENDPOINT:-https://models.github.ai/inference/chat/completions}"
+AI_AUTH_SCHEME="${AI_AUTH_SCHEME:-bearer}"
 AI_MODEL="${AI_MODEL:-openai/gpt-4.1}"
 DEPLOYMENT_ENVIRONMENT="${DEPLOYMENT_ENVIRONMENT:-production - public internet-facing}"
 APP_CONTEXT="${APP_CONTEXT:-A build being released to a public-facing, internet-exposed website.}"
@@ -87,6 +89,15 @@ if [[ "$AI_ASSESS" == "true" ]]; then
     exit 1
   fi
   : "${MODELS_TOKEN:?MODELS_TOKEN is required when ai-assess is true}"
+  AI_AUTH_SCHEME=$(printf '%s' "$AI_AUTH_SCHEME" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  if [[ "$AI_AUTH_SCHEME" != "bearer" && "$AI_AUTH_SCHEME" != "api-key" ]]; then
+    echo "::error::Input 'ai-auth-scheme' must be 'bearer' or 'api-key' (got '${AI_AUTH_SCHEME}')."
+    exit 1
+  fi
+  if [[ ! "$AI_ENDPOINT" =~ ^https:// ]]; then
+    echo "::error::Input 'ai-endpoint' must be an https:// URL (got '${AI_ENDPOINT}'). Refusing to send a bearer token over an insecure or non-HTTP(S) scheme."
+    exit 1
+  fi
 fi
 
 SLAS=$(jq -nc \
@@ -315,7 +326,7 @@ echo "Result: ${RESULT} | open=${TOTAL_OPEN} violations=${VIOLATION_COUNT} enfor
 # `enforce` mode). AI_ENFORCE_FAIL records that outcome for the final gate.
 AI_ENFORCE_FAIL=0
 if [[ "$AI_ASSESS" == "true" ]]; then
-  echo "AI risk assessment enabled; weighing open alerts (with SLA status) via GitHub Models (${AI_MODEL})..."
+  echo "AI risk assessment enabled; weighing open alerts (with SLA status) via ${AI_ENDPOINT} model=${AI_MODEL}..."
 
   # --- Fetch CISA KEV catalog (known-exploited amplifier) --------------------
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -506,18 +517,22 @@ if [[ "$AI_ASSESS" == "true" ]]; then
     echo "$USER_PROMPT"
     echo "::endgroup::"
 
-    echo "Requesting risk assessment from GitHub Models (${AI_MODEL})..."
+    echo "Requesting risk assessment from ${AI_ENDPOINT} (model=${AI_MODEL})..."
     RESP_FILE=$(mktemp)
+    if [[ "$AI_AUTH_SCHEME" == "api-key" ]]; then
+      AUTH_HEADER="api-key: ${MODELS_TOKEN}"
+    else
+      AUTH_HEADER="Authorization: Bearer ${MODELS_TOKEN}"
+    fi
     HTTP_CODE=$(curl -sS -o "$RESP_FILE" -w '%{http_code}' \
-      -X POST "https://models.github.ai/inference/chat/completions" \
-      -H "Authorization: Bearer ${MODELS_TOKEN}" \
-      -H "Accept: application/vnd.github+json" \
-      -H "X-GitHub-Api-Version: 2026-03-10" \
+      -X POST "$AI_ENDPOINT" \
+      -H "$AUTH_HEADER" \
+      -H "Accept: application/json" \
       -H "Content-Type: application/json" \
       -d "$REQ" || echo "000")
 
     if [[ "$HTTP_CODE" != "200" ]]; then
-      echo "::error::GitHub Models inference failed (HTTP ${HTTP_CODE}). Ensure the calling job grants 'models: read' and the model id '${AI_MODEL}' is valid. Response: $(tr '\n' ' ' < "$RESP_FILE" | head -c 800)"
+      echo "::error::AI inference request to '${AI_ENDPOINT}' failed (HTTP ${HTTP_CODE}). Check 'ai-endpoint', that the 'models-token' is valid for that endpoint, and that model id '${AI_MODEL}' is valid there. GitHub Models was retired on 2026-07-30 — set 'ai-endpoint' to another OpenAI-compatible provider (see action inputs). Response: $(tr '\n' ' ' < "$RESP_FILE" | head -c 800)"
       rm -f "$RESP_FILE"
       exit 1
     fi

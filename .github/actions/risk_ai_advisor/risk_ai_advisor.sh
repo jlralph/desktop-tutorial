@@ -16,6 +16,8 @@ set -euo pipefail
 : "${REPOSITORY:?REPOSITORY is required}"
 DEPENDABOT_TOKEN="${DEPENDABOT_TOKEN:-$GH_TOKEN}"
 MODEL="${MODEL:-openai/gpt-4.1}"
+AI_ENDPOINT="${AI_ENDPOINT:-https://models.github.ai/inference/chat/completions}"
+AI_AUTH_SCHEME="${AI_AUTH_SCHEME:-bearer}"
 DEPLOYMENT_ENVIRONMENT="${DEPLOYMENT_ENVIRONMENT:-production - public internet-facing}"
 APP_CONTEXT="${APP_CONTEXT:-A build being released to a public-facing, internet-exposed website.}"
 # Compensating controls (WAF, load balancer, etc.) selected for this run, if any.
@@ -33,6 +35,16 @@ VALID_LEVELS="critical high medium low minimal"
 # --- Validate inputs --------------------------------------------------------
 if ! [[ "$MAX_ALERTS" =~ ^[0-9]+$ ]]; then
   echo "::error::Input 'max-alerts' must be a non-negative integer (got '${MAX_ALERTS}')."
+  exit 1
+fi
+
+AI_AUTH_SCHEME=$(printf '%s' "$AI_AUTH_SCHEME" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+if [[ "$AI_AUTH_SCHEME" != "bearer" && "$AI_AUTH_SCHEME" != "api-key" ]]; then
+  echo "::error::Input 'ai-auth-scheme' must be 'bearer' or 'api-key' (got '${AI_AUTH_SCHEME}')."
+  exit 1
+fi
+if [[ ! "$AI_ENDPOINT" =~ ^https:// ]]; then
+  echo "::error::Input 'ai-endpoint' must be an https:// URL (got '${AI_ENDPOINT}'). Refusing to send a bearer token over an insecure or non-HTTP(S) scheme."
   exit 1
 fi
 
@@ -353,18 +365,22 @@ else
   echo "$USER_PROMPT"
   echo "::endgroup::"
 
-  echo "Requesting risk assessment from GitHub Models (${MODEL})..."
+  echo "Requesting risk assessment from ${AI_ENDPOINT} (model=${MODEL})..."
   RESP_FILE=$(mktemp)
+  if [[ "$AI_AUTH_SCHEME" == "api-key" ]]; then
+    AUTH_HEADER="api-key: ${MODELS_TOKEN}"
+  else
+    AUTH_HEADER="Authorization: Bearer ${MODELS_TOKEN}"
+  fi
   HTTP_CODE=$(curl -sS -o "$RESP_FILE" -w '%{http_code}' \
-    -X POST "https://models.github.ai/inference/chat/completions" \
-    -H "Authorization: Bearer ${MODELS_TOKEN}" \
-    -H "Accept: application/vnd.github+json" \
-    -H "X-GitHub-Api-Version: 2026-03-10" \
+    -X POST "$AI_ENDPOINT" \
+    -H "$AUTH_HEADER" \
+    -H "Accept: application/json" \
     -H "Content-Type: application/json" \
     -d "$REQ" || echo "000")
 
   if [[ "$HTTP_CODE" != "200" ]]; then
-    echo "::error::GitHub Models inference failed (HTTP ${HTTP_CODE}). Ensure the calling job grants 'models: read' and the model id '${MODEL}' is valid. Response: $(tr '\n' ' ' < "$RESP_FILE" | head -c 800)"
+    echo "::error::AI inference request to '${AI_ENDPOINT}' failed (HTTP ${HTTP_CODE}). Check 'ai-endpoint', that the 'models-token' is valid for that endpoint, and that model id '${MODEL}' is valid there. GitHub Models was retired on 2026-07-30 — set 'ai-endpoint' to another OpenAI-compatible provider (see action inputs). Response: $(tr '\n' ' ' < "$RESP_FILE" | head -c 800)"
     rm -f "$RESP_FILE"
     exit 1
   fi

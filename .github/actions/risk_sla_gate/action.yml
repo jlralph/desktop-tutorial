@@ -89,16 +89,40 @@ inputs:
     default: "false"
   models-token:
     description: >-
-      Token used to call the GitHub Models inference API when 'ai-assess' is
-      true. Requires 'models: read'; the default GITHUB_TOKEN works when the
-      calling job grants it. The Dependabot PAT in 'github-token' usually lacks
-      this scope, so pass the workflow's GITHUB_TOKEN here.
+      Token/key used to authenticate to the AI inference endpoint when
+      'ai-assess' is true. For the default GitHub Models endpoint, requires
+      'models: read' (the workflow GITHUB_TOKEN works — the Dependabot PAT in
+      'github-token' usually lacks this scope). For other providers, pass their
+      API key (OpenAI/OpenRouter/Groq/Azure) via a secret.
     required: false
     default: ${{ github.token }}
+  ai-endpoint:
+    description: >-
+      Full URL of an OpenAI-compatible chat/completions endpoint. Defaults to
+      GitHub Models (retired 2026-07-30 — override this to migrate). Examples:
+      OpenAI 'https://api.openai.com/v1/chat/completions'; OpenRouter
+      'https://openrouter.ai/api/v1/chat/completions'; Groq
+      'https://api.groq.com/openai/v1/chat/completions'; Azure OpenAI
+      'https://<resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-10-21'.
+      Only used when 'ai-assess' is true.
+    required: false
+    default: "https://models.github.ai/inference/chat/completions"
+  ai-auth-scheme:
+    description: >-
+      How to send 'models-token' on the inference request. 'bearer' sends
+      'Authorization: Bearer <token>' (works with OpenAI, OpenRouter, Groq,
+      Azure with Entra tokens, and GitHub Models). 'api-key' sends 'api-key:
+      <token>' (used by Azure OpenAI resource keys). Only used when 'ai-assess'
+      is true.
+    required: false
+    default: "bearer"
   ai-model:
     description: >-
-      GitHub Models model to use for the AI assessment, in '{publisher}/{model}'
-      form (e.g. 'openai/gpt-4.1'). Only used when 'ai-assess' is true.
+      Model id to use for the AI assessment. Value shape depends on the
+      endpoint: GitHub Models expects '{publisher}/{model}' (e.g.
+      'openai/gpt-4.1'); OpenAI expects a bare id (e.g. 'gpt-4.1'); Azure
+      OpenAI uses the deployment name (often ignored when set in the URL).
+      Only used when 'ai-assess' is true.
     required: false
     default: "openai/gpt-4.1"
   deployment-environment:
@@ -230,6 +254,8 @@ runs:
         # Optional AI risk assessment (no model is called unless AI_ASSESS=true).
         AI_ASSESS: ${{ inputs.ai-assess }}
         MODELS_TOKEN: ${{ inputs.models-token }}
+        AI_ENDPOINT: ${{ inputs.ai-endpoint }}
+        AI_AUTH_SCHEME: ${{ inputs.ai-auth-scheme }}
         AI_MODEL: ${{ inputs.ai-model }}
         DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment-environment }}
         APP_CONTEXT: ${{ inputs.app-context }}

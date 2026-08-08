@@ -31,10 +31,37 @@ inputs:
     default: ${{ github.repository }}
   model:
     description: >-
-      GitHub Models model to use, in '{publisher}/{model}' form
-      (e.g. 'openai/gpt-4.1').
+      Model id to use. Value shape depends on the endpoint: GitHub Models
+      expects '{publisher}/{model}' (e.g. 'openai/gpt-4.1'); OpenAI expects a
+      bare id (e.g. 'gpt-4.1'); Azure OpenAI uses the deployment name (often
+      ignored when set in the URL).
     required: false
     default: "openai/gpt-4.1"
+  ai-endpoint:
+    description: >-
+      Full URL of an OpenAI-compatible chat/completions endpoint. Defaults to
+      GitHub Models (retired 2026-07-30 — override this to migrate). Examples:
+      OpenAI 'https://api.openai.com/v1/chat/completions'; OpenRouter
+      'https://openrouter.ai/api/v1/chat/completions'; Groq
+      'https://api.groq.com/openai/v1/chat/completions'; Azure OpenAI
+      'https://<resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-10-21'.
+    required: false
+    default: "https://models.github.ai/inference/chat/completions"
+  ai-auth-scheme:
+    description: >-
+      How to send the inference token on the request. 'bearer' sends
+      'Authorization: Bearer <token>' (works with OpenAI, OpenRouter, Groq,
+      Azure with Entra tokens, and GitHub Models). 'api-key' sends 'api-key:
+      <token>' (used by Azure OpenAI resource keys).
+    required: false
+    default: "bearer"
+  models-token:
+    description: >-
+      Token/key sent to 'ai-endpoint'. Defaults to 'github-token' so the
+      GitHub Models path still works out of the box; when migrating to
+      another provider, pass their API key here via a secret.
+    required: false
+    default: ""
   deployment-environment:
     description: >-
       Deployment environment and its exposure, given to the model as context to
@@ -189,7 +216,9 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         DEPENDABOT_TOKEN: ${{ inputs.dependabot-token }}
-        MODELS_TOKEN: ${{ inputs.github-token }}
+        MODELS_TOKEN: ${{ inputs.models-token != '' && inputs.models-token || inputs.github-token }}
+        AI_ENDPOINT: ${{ inputs.ai-endpoint }}
+        AI_AUTH_SCHEME: ${{ inputs.ai-auth-scheme }}
         REPOSITORY: ${{ inputs.repository }}
         MODEL: ${{ inputs.model }}
         DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment-environment }}

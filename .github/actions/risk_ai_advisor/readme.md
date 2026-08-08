@@ -123,7 +123,7 @@ levels, the least severe one is used as the threshold.
 | Need | How |
 |---|---|
 | Read CodeQL alerts | `security-events: read` on the calling job's `GITHUB_TOKEN` (the action's `github-token` input). |
-| Call GitHub Models | `models: read` on the same `GITHUB_TOKEN`. |
+| Call the AI endpoint | For the default (retired) GitHub Models endpoint: `models: read` on `GITHUB_TOKEN`. For another provider (see [Choosing an AI provider](#choosing-an-ai-provider)): pass their API key as `models-token` via a secret. |
 | Read Dependabot alerts | The default `GITHUB_TOKEN` generally **cannot** read Dependabot alerts. Provide a fine-grained PAT (repository permission "Dependabot alerts: read" + "Metadata: read") or a GitHub App installation token via `dependabot-token`. |
 
 If a source can't be read (feature disabled or token lacks scope), the action
@@ -133,10 +133,13 @@ logs a warning and proceeds on whatever signal it can read rather than failing.
 
 | Input | Default | Description |
 |---|---|---|
-| `github-token` | `${{ github.token }}` | Reads CodeQL alerts and calls GitHub Models. Needs `security-events: read` + `models: read`. |
+| `github-token` | `${{ github.token }}` | Reads CodeQL alerts and, on the default GitHub Models endpoint, calls the model. Needs `security-events: read` (+ `models: read` if you leave `models-token` at its default). |
 | `dependabot-token` | `${{ github.token }}` | Reads Dependabot alerts. Use a PAT/App token with "Dependabot alerts: read". |
 | `repository` | `${{ github.repository }}` | Repo to assess, `owner/repo`. |
-| `model` | `openai/gpt-4.1` | GitHub Models model, `{publisher}/{model}`. |
+| `ai-endpoint` | GitHub Models URL | Full URL of an OpenAI-compatible chat/completions endpoint. See [Choosing an AI provider](#choosing-an-ai-provider). |
+| `ai-auth-scheme` | `bearer` | `bearer` (`Authorization: Bearer …`) for OpenAI/OpenRouter/Groq/Azure-with-Entra/GitHub Models, or `api-key` for Azure OpenAI resource keys. |
+| `models-token` | `""` (falls back to `github-token`) | Token/key sent to `ai-endpoint`. Leave empty to reuse `github-token` (works with GitHub Models); for another provider, pass their API key via a secret. |
+| `model` | `openai/gpt-4.1` | Model id. Shape depends on the endpoint (GitHub Models: `{publisher}/{model}`; OpenAI: bare id; Azure: deployment name — often in the URL). |
 | `app-context` | _(generic public-site text)_ | Description of what's being released and its exposure — sharper context, sharper verdict. |
 | `mitigations` | `""` | Compensating controls already in front of the build (WAF, load balancer, CDN/DDoS, network isolation, rate limiting, …), as a human-readable list. The model weighs them when judging exploitability and blast radius. Empty = none specified. See [Compensating controls](#compensating-controls). |
 | `fail-on` | `""` | Severity threshold that fails the job — fails at this level or above (e.g. `high` → high + critical). Empty = advisory only. |
@@ -164,6 +167,26 @@ logs a warning and proceeds on whatever signal it can read rather than failing.
 | `attestation-url` | URL of the signed provenance attestation for the advisory report file. |
 | `model-io-attestation-url` | URL of the signed provenance attestation for the model I/O record. |
 | `bundle-attestation-url` | URL of the signed provenance attestation for the uploaded artifact bundle. |
+
+## Choosing an AI provider
+
+GitHub Models was **fully retired on 2026-07-30**. The default `ai-endpoint`
+still points at the (now-410-returning) GitHub Models URL, so existing
+configurations continue to load — but any run that actually calls the model
+will fail until `ai-endpoint` is repointed. Any OpenAI-compatible chat/
+completions endpoint works. Common choices:
+
+| Provider | `ai-endpoint` | `ai-auth-scheme` | `model` example |
+|---|---|---|---|
+| OpenAI | `https://api.openai.com/v1/chat/completions` | `bearer` | `gpt-4.1` |
+| OpenRouter | `https://openrouter.ai/api/v1/chat/completions` | `bearer` | `openai/gpt-4.1` |
+| Groq | `https://api.groq.com/openai/v1/chat/completions` | `bearer` | `llama-3.3-70b-versatile` |
+| Azure OpenAI (resource key) | `https://<resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-10-21` | `api-key` | *(deployment name; usually ignored)* |
+| Azure OpenAI (Entra token) | *(same URL as above)* | `bearer` | *(same as above)* |
+
+Pass the provider's API key as `models-token` via a repo/org secret. The
+request shape is unchanged — only the URL, auth header, and (sometimes)
+model-id shape differ.
 
 ## Report attestation
 
@@ -195,7 +218,7 @@ on:
 permissions:
   contents: read
   security-events: read   # read CodeQL code-scanning alerts
-  models: read            # call the GitHub Models inference API
+  models: read            # only needed if ai-endpoint is left at the GitHub Models default
   id-token: write         # mint OIDC token for keyless attestation
   attestations: write     # persist signed provenance attestations
 
@@ -211,7 +234,12 @@ jobs:
         with:
           # GITHUB_TOKEN cannot read Dependabot alerts — supply a scoped token.
           dependabot-token: ${{ secrets.DEPENDABOT_ALERTS_TOKEN }}
-          model: openai/gpt-4.1
+          # GitHub Models retired 2026-07-30 — repoint at a live OpenAI-compatible
+          # endpoint (see "Choosing an AI provider").
+          ai-endpoint: https://api.openai.com/v1/chat/completions
+          ai-auth-scheme: bearer
+          models-token: ${{ secrets.OPENAI_API_KEY }}
+          model: gpt-4.1
           app-context: >-
             Public-facing Java web application handling user authentication and
             payments, deployed to the public internet behind a CDN.
