@@ -442,7 +442,7 @@ if [[ "$CONFIDENCE" == "unknown" ]]; then
   esac
 fi
 # Accept common summary field aliases; also handle verdict_summary.
-SUMMARY=$(jq -r '.summary // .verdict_summary // .risk_summary // "null"' <<< "$VERDICT")
+SUMMARY=$(jq -r '.summary // .assessment_summary // .verdict_summary // .risk_summary // "null"' <<< "$VERDICT")
 # If recommended_mitigations is an array of objects (not strings), flatten to "action: detail" strings.
 VERDICT=$(jq 'if (.recommended_mitigations | length) > 0 and (.recommended_mitigations[0] | type) == "object"
   then .recommended_mitigations |= map(
@@ -749,7 +749,7 @@ The deployment environment is: \"${DEPLOYMENT_ENVIRONMENT}\". Output only what t
             conditional-go) NEW_CONFIDENCE="medium" ;;
           esac
         fi
-        NEW_SUMMARY=$(jq -r '.summary // "null"' <<< "$HUNTING_VERDICT")
+        NEW_SUMMARY=$(jq -r '.summary // .assessment_summary // .verdict_summary // .risk_summary // "null"' <<< "$HUNTING_VERDICT")
         REASSESSMENT_NOTES=$(jq -r '.reassessment_notes // ""' <<< "$HUNTING_VERDICT")
 
         if [[ "$NEW_RISK_LEVEL" == "null" || "$NEW_RECOMMENDATION" == "null" ]]; then
