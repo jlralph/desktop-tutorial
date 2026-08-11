@@ -396,9 +396,17 @@ else
   echo "::endgroup::"
 
   CONTENT=$(jq -r '.choices[0].message.content // empty' < "$RESP_FILE")
+  # Some reasoning-model responses leave content empty and put the model's output
+  # in message.reasoning instead. Surface that in the error so the failure is
+  # diagnosable rather than silent.
+  REASONING=$(jq -r '.choices[0].message.reasoning // empty' < "$RESP_FILE")
   rm -f "$RESP_FILE"
   if [[ -z "$CONTENT" ]]; then
-    echo "::error::GitHub Models returned no content to parse."
+    if [[ -n "$REASONING" ]]; then
+      echo "::error::GitHub Models returned no structured content — the model emitted only a 'reasoning' field (no schema-conformant JSON). First 800 chars of reasoning: $(head -c 800 <<< "$REASONING")"
+    else
+      echo "::error::GitHub Models returned no content to parse."
+    fi
     exit 1
   fi
 
@@ -720,8 +728,13 @@ The deployment environment is: \"${DEPLOYMENT_ENVIRONMENT}\". Output only what t
     rm -f "$HUNTING_RESP_FILE"
 
     HUNTING_CONTENT=$(jq -r '.choices[0].message.content // empty' <<< "$HUNTING_RAW_RESPONSE")
+    HUNTING_REASONING=$(jq -r '.choices[0].message.reasoning // empty' <<< "$HUNTING_RAW_RESPONSE")
     if [[ -z "$HUNTING_CONTENT" ]]; then
-      echo "::warning::Threat hunting reassessment returned no content; using initial verdict."
+      if [[ -n "$HUNTING_REASONING" ]]; then
+        echo "::warning::Threat hunting reassessment returned no structured content — the model emitted only a 'reasoning' field (no schema-conformant JSON); using initial verdict. First 800 chars of reasoning: $(head -c 800 <<< "$HUNTING_REASONING")"
+      else
+        echo "::warning::Threat hunting reassessment returned no content; using initial verdict."
+      fi
       THREAT_HUNTING_PERFORMED=false
     else
       HUNTING_CONTENT=$(sed '/^```/d' <<< "$HUNTING_CONTENT")
